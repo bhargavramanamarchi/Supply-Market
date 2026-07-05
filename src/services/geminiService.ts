@@ -1,5 +1,6 @@
 import type { Supplier, Product } from "./supplierData";
 import { getStoredSuppliers } from "./supplierData";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 
 export interface MatchResult {
   bestSupplier: Supplier;
@@ -50,7 +51,6 @@ const KEYWORD_MAP: Record<string, string[]> = {
   "Electronics": ["electronics", "mcu", "arduino", "wire", "connector", "jumper", "pcb", "board", "microcontroller"]
 };
 
-// 6-Language Sourcing Templates Matrix
 const TRANSLATION_MATRIX: Record<string, Record<string, {
   voice: string;
   reason: string;
@@ -67,10 +67,10 @@ const TRANSLATION_MATRIX: Record<string, Record<string, {
   },
   "Telugu": {
     "default": {
-      voice: "నమస్కారం. మీ అవసరానికి సరిపోయే ఉత్తమ సరఫరాదారుని నేను కనుగొన్నాను. {Supplier} వద్ద కిలో ₹{Price} ధరకే ప్రీమియం {Product} అందుబాటులో ఉంది. ప్రస్తుతం వారి వద్ద తగినంత స్టాక్ ఉంది. మీరు ఈ సరఫరాదారుని సంప్రదించాలనుకుంటున్నారా?",
-      reason: "{Supplier} వద్ద తగినంత స్టాక్ ({Stock} {Unit} అందుబాటులో ఉంది) మరియు కిలో ₹{Price} చొప్పున చాలా తక్కువ ధరకే లభిస్తోంది. వీరు వేగంగా పంపడానికి {Location} లోనే ఉన్నారు.",
-      recom: "మీరు వెంటనే {Supplier} వారిని సంప్రదించాలని మేము సూచిస్తున్నాము. వారి ధరలు చాలా అనుకూలంగా ఉన్నాయి.",
-      next: "నేరుగా ఫోన్ సంప్రదింపులను ప్రారంభించడానికి కింద ఉన్న 'Connect Supplier' బటన్ పై క్లిక్ చేయండి."
+      voice: "നമസ്കാരം. మీ అవసరానికి సరిపోయే ఉత్తమ సరఫരാదారుని నేను కనుగొన్నాను. {Supplier} వద్ద కిలో ₹{Price} ధరకే ప్రీమియం {Product} అందుబాటులో ఉంది. ప్రస్తుతం వారి వద్ద తగినంత స్టാక్ ఉంది. మీరు ఈ సరఫరాదారుని సంപ്രదించాలనుకుంటున్నారా?",
+      reason: "{Supplier} వద్ద తగినంత స్టാక్ ({Stock} {Unit} అందుబాటులో ఉంది) మరియు కిలో ₹{Price} చొപ്പുన చాలా తక్కువ ధరకే లభిస్తోంది. వీరు వేగంగా పంపడానికి {Location} లోనే ఉన్నారు.",
+      recom: "మీరు వెంటనే {Supplier} వారిని సంപ്രదించాలని మేము సూచిస్తున్నాము. వారి ధరలు చాలా అనుకూలంగా ఉన్నాయి.",
+      next: "నేరుగా ఫోన్ సంപ്രദിంపులను ప్రారంభించడానికి కింద ఉన్న 'Connect Supplier' బటన్ పై క్ലിക്ക് చేయండి."
     }
   },
   "Hindi": {
@@ -83,7 +83,7 @@ const TRANSLATION_MATRIX: Record<string, Record<string, {
   },
   "Tamil": {
     "default": {
-      voice: "வணக்கம். உங்கள் தேவைக்கேற்ற சிறந்த சப்ளையரை நான் கண்டுபிடித்துள்ளேன். {Supplier} நிறுவனத்திடம் ஒரு {Unit} ₹{Price} விலையில் பிரீமியம் {Product} கிடைக்கிறது. தற்போது அவர்களிடம் தேவையான அளவு இருப்பு உள்ளது. இந்த சப்ளையரை நீங்கள் தொடர்பு கொள்ள விரும்புகிறீர்களா?",
+      voice: "வணக்கம். உங்கள் தேவைக்கேற்ற சிறந்த சப்ளையரை நான் கண்டுபிடித்துள்ளேன். {Supplier} நிறுவனத்திடம் ஒரு {Unit} ₹{Price} விலையில் பிரீமியம் {Product} கிடைக்கிறது. தற்போது அவர்களிடம் தேவையான அளவு இருപ്പ് உள்ளது. ഈ சப்ளையரை நீங்கள் தொடர்பு கொள்ள விரும்புகிறீர்களா?",
       reason: "{Supplier} நிறுவனத்திடம் போதுமான இருப்பு ({Stock} {Unit}) உள்ளது, ₹{Price} என்ற சிறந்த போட்டி விலையில் தருகிறார்கள், மேலும் விரைவாக அனுப்ப {Location} பகுதியிலேயே உள்ளனர்.",
       recom: "நீங்கள் உடனடியாக {Supplier} நிறுவனத்தை தொடர்பு கொள்ளுமாறு பரிந்துரைக்கிறோம். அவர்களின் விலை மிகவும் மலிவானது.",
       next: "நேரடி தொலைபேசி தொடர்பை ஏற்படுத்த கீழே உள்ள 'Connect Supplier' பொத்தானை கிளிக் செய்யவும்."
@@ -107,9 +107,332 @@ const TRANSLATION_MATRIX: Record<string, Record<string, {
   }
 };
 
+/**
+ * Initialize Gemini client helper
+ */
+const getGeminiAIClient = (): GoogleGenerativeAI => {
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error("VITE_GEMINI_API_KEY is not defined in environment.");
+  }
+  return new GoogleGenerativeAI(apiKey);
+};
+
+/**
+ * Main AI matching function powered by Google Gemini
+ */
 export const matchSuppliersAI = async (query: string, lang: string = "English"): Promise<MatchResult> => {
+  try {
+    const genAI = getGeminiAIClient();
+    
+    // 1. Structured JSON extraction prompt
+    const extractionPrompt = `You are a professional buyer sourcing agent. Analyze the following buyer request and extract the parameters:
+Request: "${query}"
+
+You must return a valid JSON object matching the following structure:
+{
+  "product": string | null (name of the product specified, e.g. "turmeric", "cement"),
+  "quantity": number | null (amount requested as a number),
+  "unit": string | null (unit of measurement, e.g. "kg", "ton", "bag", "piece"),
+  "city": string | null (city requested for supply, e.g. "Vijayawada", "Hyderabad"),
+  "state": string | null (state requested for supply),
+  "quality": string | null (quality grade preferred, e.g. "Premium", "Grade A"),
+  "category": string | null (Choose strictly from: "Turmeric", "Rice", "Wood", "Steel", "Cement", "Packaging", "Cotton", "Electronics"),
+  "budget": number | null (maximum budget number specified, e.g. 18000),
+  "notes": string | null (extra remarks),
+  "unclear": boolean (set to true ONLY if the input is empty, nonsensical, contains no product words, or lacks clear business meaning so that matching is impossible),
+  "followup": string | null (if unclear is true, write a polite clarify message in ${lang} language, e.g. "I couldn't understand the product you need. Could you please tell me the product name and quantity?")
+}
+
+Return ONLY valid JSON. Do not include markdown formatting or extra dialogue.`;
+
+    const model = genAI.getGenerativeModel({
+      model: "gemini-1.5-flash",
+      generationConfig: {
+        responseMimeType: "application/json"
+      }
+    });
+
+    const extractionResult = await model.generateContent(extractionPrompt);
+    const text = extractionResult.response.text();
+    const extracted = JSON.parse(text);
+
+    // 2. Handle unclear / non-business requests
+    if (extracted.unclear) {
+      const mockSupplier: Supplier = {
+        id: "mock_assistant",
+        businessName: "AI Sourcing Assistant",
+        rating: 5.0,
+        trustScore: 100,
+        location: "System Nodes",
+        contactNumber: "+91 00000 00000",
+        businessHours: "24/7",
+        products: []
+      };
+      const mockProduct: Product = {
+        id: "mock_assistant_prod",
+        name: "Sourcing Support",
+        category: "Support",
+        description: "Clarification request.",
+        price: 0,
+        unit: "unit",
+        quantityAvailable: 0,
+        qualityGrade: "Premium",
+        location: "System Nodes",
+        businessName: "AI Sourcing Assistant",
+        contactNumber: "+91 00000 00000",
+        availability: "Immediate",
+        businessHours: "24/7"
+      };
+
+      const followupMsg = extracted.followup || "I couldn't understand the product you need. Could you please tell me the product name and quantity?";
+      
+      return {
+        bestSupplier: mockSupplier,
+        bestProduct: mockProduct,
+        matchingReason: followupMsg,
+        voiceTranscript: followupMsg,
+        allMatches: [],
+        priceComparison: [],
+        aiSummary: {
+          requirement: query,
+          selectedSupplier: "AI Assistant",
+          price: "N/A",
+          quantity: "N/A",
+          location: "N/A",
+          matchingReason: followupMsg,
+          recommendation: "Please specify product name and volume.",
+          nextAction: "Clarify Sourcing Needs"
+        }
+      };
+    }
+
+    // 3. Search storage database
+    const suppliers = getStoredSuppliers();
+    const matches: Array<{
+      supplier: Supplier;
+      product: Product;
+      score: number;
+      reasons: string[];
+    }> = [];
+
+    suppliers.forEach(supplier => {
+      supplier.products.forEach(product => {
+        let score = 0;
+        const reasons: string[] = [];
+
+        // Category matching (Strong weight)
+        if (extracted.category && product.category.toLowerCase() === extracted.category.toLowerCase()) {
+          score += 50;
+          reasons.push("Category matches");
+        } else if (extracted.product && product.category.toLowerCase().includes(extracted.product.toLowerCase())) {
+          score += 30;
+          reasons.push("Category matching filter");
+        }
+
+        // Product name match
+        if (extracted.product) {
+          const prodName = product.name.toLowerCase();
+          const extProd = extracted.product.toLowerCase();
+          if (prodName.includes(extProd) || extProd.includes(prodName)) {
+            score += 25;
+            reasons.push("Exact item matches name");
+          }
+        }
+
+        // Quality grade matching
+        if (extracted.quality && product.qualityGrade.toLowerCase().includes(extracted.quality.toLowerCase())) {
+          score += 20;
+          reasons.push("Preferred quality grade");
+        }
+
+        // Location city matching
+        if (extracted.city && supplier.location.toLowerCase().includes(extracted.city.toLowerCase())) {
+          score += 20;
+          reasons.push("Location matching city");
+        }
+
+        // Quantity availability
+        const targetQty = extracted.quantity || 1;
+        if (product.quantityAvailable >= targetQty) {
+          score += 20;
+          reasons.push("Sufficient stock");
+        } else {
+          score -= 40;
+          reasons.push("Stock buffers low");
+        }
+
+        // Rating & Trust Score weights
+        score += supplier.rating * 5; // e.g. 24 points
+        score += (supplier.trustScore - 90) * 0.5; // e.g. 3 points
+
+        // Price & Budget limits
+        if (extracted.budget) {
+          if (product.price <= extracted.budget) {
+            score += 20;
+            reasons.push("Fits budget limits");
+          } else {
+            score -= 35;
+            reasons.push("Price above budget limit");
+          }
+        }
+
+        // Filter out completely non-matching categories to keep matches accurate
+        const isCatMatch = extracted.category && product.category.toLowerCase() === extracted.category.toLowerCase();
+        const isNameMatch = extracted.product && product.name.toLowerCase().includes(extracted.product.toLowerCase());
+        
+        if (isCatMatch || isNameMatch) {
+          matches.push({
+            supplier,
+            product,
+            score,
+            reasons
+          });
+        }
+      });
+    });
+
+    // 4. Handle no matching suppliers found
+    if (matches.length === 0) {
+      const noMatchMsg = "No matching suppliers found in our database for your request. Please try searching for different products or adjusting your quality and quantity specifications.";
+      const mockSupplier: Supplier = {
+        id: "mock_no_match",
+        businessName: "Sourcing Notification",
+        rating: 5.0,
+        trustScore: 100,
+        location: "System Nodes",
+        contactNumber: "+91 00000 00000",
+        businessHours: "24/7",
+        products: []
+      };
+      const mockProduct: Product = {
+        id: "mock_no_match_prod",
+        name: "N/A",
+        category: "N/A",
+        description: "No direct supplier matches.",
+        price: 0,
+        unit: "unit",
+        quantityAvailable: 0,
+        qualityGrade: "Standard",
+        location: "System Nodes",
+        businessName: "Sourcing Notification",
+        contactNumber: "+91 00000 00000",
+        availability: "Immediate",
+        businessHours: "24/7"
+      };
+
+      return {
+        bestSupplier: mockSupplier,
+        bestProduct: mockProduct,
+        matchingReason: noMatchMsg,
+        voiceTranscript: noMatchMsg,
+        allMatches: [],
+        priceComparison: [],
+        aiSummary: {
+          requirement: query,
+          selectedSupplier: "No Matches",
+          price: "N/A",
+          quantity: extracted.quantity ? `${extracted.quantity} ${extracted.unit || ""}` : "N/A",
+          location: "N/A",
+          matchingReason: noMatchMsg,
+          recommendation: "Consider updating specifications.",
+          nextAction: "Search Alternate Options"
+        }
+      };
+    }
+
+    // 5. Rank and retrieve best matched items
+    matches.sort((a, b) => b.score - a.score);
+    const bestMatch = matches[0];
+    const bestSupplier = bestMatch.supplier;
+    const bestProduct = bestMatch.product;
+
+    // Price comparison list
+    const categoryProducts = suppliers
+      .flatMap(s => s.products.map(p => ({ supplierName: s.businessName, ...p })))
+      .filter(p => p.category === bestProduct.category && p.id !== bestProduct.id)
+      .slice(0, 2);
+
+    const priceComparison = [
+      {
+        supplierName: bestSupplier.businessName,
+        productName: bestProduct.name,
+        price: bestProduct.price,
+        unit: bestProduct.unit,
+        quality: bestProduct.qualityGrade
+      },
+      ...categoryProducts.map(p => ({
+        supplierName: p.supplierName,
+        productName: p.name,
+        price: p.price,
+        unit: p.unit,
+        quality: p.qualityGrade
+      }))
+    ];
+
+    // 6. Generate natural language selection explanation & next action recommendation using Gemini
+    const justificationPrompt = `You are an AI Sourcing Agent for "Supply Market".
+You matched a buyer's request with a supplier.
+
+Buyer's Request: "${query}"
+Selected Supplier: "${bestSupplier.businessName}" (Rating: ${bestSupplier.rating}, Location: ${bestSupplier.location}, Trust Score: ${bestSupplier.trustScore}%)
+Selected Product: "${bestProduct.name}" (Price: ₹${bestProduct.price}/${bestProduct.unit}, Quality: ${bestProduct.qualityGrade}, Stock: ${bestProduct.quantityAvailable} ${bestProduct.unit}, Availability: ${bestProduct.availability})
+
+Write a simple, polite, human-friendly explanation of why this supplier was selected for the buyer. 
+Write only 1 or 2 sentences. 
+Do not use markdown formatting (like asterisks or bold text).
+You MUST write the explanation in ${lang} language.`;
+
+    const nextActionPrompt = `You are an AI Sourcing Agent for "Supply Market".
+The buyer is matched with the supplier "${bestSupplier.businessName}".
+Generate a very short direct recommendation for the buyer's next step.
+Write only 5 to 8 words. Do not use markdown.
+You MUST write the recommendation in ${lang} language.`;
+
+    const justificationResult = await model.generateContent(justificationPrompt);
+    const matchingReason = justificationResult.response.text().trim();
+    const voiceTranscript = matchingReason;
+
+    const nextActionResult = await model.generateContent(nextActionPrompt);
+    const recommendation = nextActionResult.response.text().trim();
+    const nextAction = `Click 'Connect' to call ${bestSupplier.businessName}`;
+
+    return {
+      bestSupplier,
+      bestProduct,
+      matchingReason,
+      voiceTranscript,
+      allMatches: matches.map(m => ({
+        supplier: m.supplier,
+        product: m.product,
+        score: m.score,
+        reason: m.reasons.slice(0, 3).join(", ")
+      })),
+      priceComparison,
+      aiSummary: {
+        requirement: query,
+        selectedSupplier: bestSupplier.businessName,
+        price: `₹${bestProduct.price} / ${bestProduct.unit}`,
+        quantity: extracted.quantity ? `${extracted.quantity} ${extracted.unit || bestProduct.unit}` : `1 ${bestProduct.unit}`,
+        location: bestSupplier.location,
+        matchingReason: matchingReason,
+        recommendation: recommendation,
+        nextAction: nextAction
+      }
+    };
+
+  } catch (error) {
+    console.error("Gemini Sourcing Match failed, falling back to keywords:", error);
+    return fallbackKeywordMatch(query, lang);
+  }
+};
+
+/**
+ * Robust fallback matching algorithm based on local keywords configuration
+ */
+const fallbackKeywordMatch = async (query: string, lang: string): Promise<MatchResult> => {
   // Simulate network/API delay for a premium matching progress feel
-  await new Promise((resolve) => setTimeout(resolve, 2200));
+  await new Promise((resolve) => setTimeout(resolve, 1500));
 
   const suppliers = getStoredSuppliers();
   const normalizedQuery = query.toLowerCase();
@@ -123,7 +446,6 @@ export const matchSuppliersAI = async (query: string, lang: string = "English"):
     keywords.forEach(kw => {
       if (normalizedQuery.includes(kw)) {
         hits += 1.5;
-        // extra points for direct matches of specific product words
         if (kw === "turmeric" && normalizedQuery.includes("turmeric")) hits += 3;
         if (kw === "rice" && normalizedQuery.includes("rice")) hits += 3;
         if (kw === "steel" && normalizedQuery.includes("steel")) hits += 3;
@@ -160,13 +482,11 @@ export const matchSuppliersAI = async (query: string, lang: string = "English"):
   // 3. Score each product
   suppliers.forEach(supplier => {
     supplier.products.forEach(product => {
-
       if (product.category !== detectedCategory) {
         return;
       }
       let score = 0;
       let matchReasons: string[] = [];
-
       const prodName = product.name.toLowerCase();
 
       // Check direct product name match

@@ -316,68 +316,91 @@ export const SellerPage: React.FC = () => {
     handleSync(updated);
   };
 
-  const aiInsights = React.useMemo(() => {
-    if (!currentSeller || currentSeller.products.length === 0) {
+  if (!currentSeller) return null;
+
+  const dynamicInsights = (() => {
+    const prods = currentSeller.products;
+    if (prods.length === 0) {
       return [
         {
-          title: t("insight1TitleDemo"),
-          desc: t("insight1DescDemo")
+          title: t("highDemandTitle"),
+          desc: t("highDemandDesc")
+            .replace(/{Product}/g, "Premium Basmati Rice")
+            .replace(/{Unit}/g, "kg")
         },
         {
-          title: t("insight2TitleDemo"),
-          desc: t("insight2DescDemo")
+          title: t("lowStockTitle"),
+          desc: t("lowStockDesc")
+            .replace(/{Product}/g, "Steel Rods")
+            .replace(/{Unit}/g, "piece")
         },
         {
-          title: t("insight3TitleDemo"),
-          desc: t("insight3DescDemo")
+          title: t("pricingTitle"),
+          desc: t("pricingDesc")
+            .replace(/{Product}/g, "Premium Turmeric Powder")
+            .replace(/{Unit}/g, "kg")
         }
       ];
     }
 
-    const list = [];
+    const insights: Array<{ title: string; desc: string }> = [];
 
-    // Insight 1: Best Selling Product
-    const bestProd = currentSeller.products.reduce((prev, curr) => 
-      (prev.price * prev.quantityAvailable > curr.price * curr.quantityAvailable) ? prev : curr
-    , currentSeller.products[0]);
-    list.push({
-      title: `⭐ ${t("bestSellingProduct")}`,
-      desc: t("bestSellingProductDesc").replace("{Product}", bestProd.name)
-    });
-
-    // Insight 2: Low Stock Alert
-    const lowStockProd = currentSeller.products.reduce((prev, curr) => 
-      (prev.quantityAvailable < curr.quantityAvailable) ? prev : curr
-    , currentSeller.products[0]);
-    
-    if (lowStockProd.quantityAvailable < 15000) {
-      list.push({
-        title: `📦 ${t("lowStockAlert")}`,
-        desc: t("lowStockAlertDesc")
-          .replace("{Product}", lowStockProd.name)
-          .replace("{Qty}", lowStockProd.quantityAvailable.toLocaleString())
-          .replace("{Unit}", lowStockProd.unit)
+    // Card 1: Low Stock or High Demand
+    const lowStockProd = prods.find(p => p.quantityAvailable < 10000);
+    if (lowStockProd) {
+      insights.push({
+        title: t("lowStockTitle"),
+        desc: t("lowStockDesc")
+          .replace(/{Product}/g, lowStockProd.name)
+          .replace(/{Unit}/g, lowStockProd.unit)
       });
     } else {
-      list.push({
-        title: `📦 ${t("lowStockAlert")}`,
-        desc: t("insight2DescDemo")
+      const topProd = prods[0];
+      insights.push({
+        title: t("highDemandTitle"),
+        desc: t("highDemandDesc")
+          .replace(/{Product}/g, topProd.name)
+          .replace(/{Unit}/g, topProd.unit)
       });
     }
 
-    // Insight 3: Pricing Recommendation
-    const pricingProd = currentSeller.products[0];
-    list.push({
-      title: `💰 ${t("pricingRecommendation")}`,
-      desc: t("pricingRecommendationDesc")
-        .replace("{Product}", pricingProd.name)
-        .replace("{Unit}", pricingProd.unit)
+    // Card 2: Pricing Recommendation
+    const firstProd = prods[0];
+    insights.push({
+      title: t("pricingTitle"),
+      desc: t("pricingDesc")
+        .replace(/{Product}/g, firstProd.name)
+        .replace(/{Unit}/g, firstProd.unit)
     });
 
-    return list;
-  }, [currentSeller, language]);
+    // Card 3: Demand Forecast or Regional Trend
+    if (prods.length > 1) {
+      const secondProd = prods[1];
+      insights.push({
+        title: t("demandForecastTitle"),
+        desc: t("demandForecastDesc")
+          .replace(/{Product}/g, secondProd.name)
+          .replace(/{Unit}/g, secondProd.unit)
+      });
+    } else {
+      const targetProd = prods[0];
+      if (targetProd.category === "Steel" || targetProd.category === "Cement") {
+        insights.push({
+          title: t("regionalTrendTitle"),
+          desc: t("regionalTrendDesc")
+        });
+      } else {
+        insights.push({
+          title: t("demandForecastTitle"),
+          desc: t("demandForecastDesc")
+            .replace(/{Product}/g, targetProd.name)
+            .replace(/{Unit}/g, targetProd.unit)
+        });
+      }
+    }
 
-  if (!currentSeller) return null;
+    return insights;
+  })();
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8 bg-app-bg min-h-[calc(100vh-4rem)] transition-colors duration-300">
@@ -457,15 +480,15 @@ export const SellerPage: React.FC = () => {
         </div>
 
         {/* AI Suggestions Banner */}
-        <div className="rounded-xl border border-primary/20 bg-gradient-to-br from-primary/5 to-secondary/5 p-5 shadow-premium">
+        <div className="rounded-xl border border-primary/20 bg-gradient-to-br from-primary/5 to-secondary/5 p-5 shadow-premium animate-fade-in">
           <div className="flex items-center gap-1.5 mb-3">
             <Sparkles className="h-4.5 w-4.5 text-primary" />
-            <h3 className="font-bold text-app-text text-sm">{t("aiSourcingSug")}</h3>
+            <h3 className="font-bold text-app-text text-sm">{t("aiBusinessInsights")}</h3>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs sm:text-sm">
-            {aiInsights.map((insight, idx) => (
-              <div key={idx} className="bg-app-card border border-app-border/40 rounded-xl p-3.5 shadow-sm flex items-start gap-2.5">
+            {dynamicInsights.map((insight, idx) => (
+              <div key={idx} className="bg-app-card border border-app-border/40 rounded-xl p-3.5 shadow-sm flex items-start gap-2.5 hover:shadow-md transition-shadow">
                 <AlertCircle className="h-4.5 w-4.5 text-primary flex-shrink-0 mt-0.5" />
                 <div>
                   <strong className="text-app-text font-bold block">{insight.title}</strong>
