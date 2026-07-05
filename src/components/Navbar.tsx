@@ -1,0 +1,266 @@
+import React, { useState } from "react";
+import { Link, useLocation, useNavigate } from "react-router-dom";
+import { Sun, Moon, Menu, X, Bot, ShieldCheck, User, Bell, Languages } from "lucide-react";
+import { useTheme } from "./ThemeContext";
+import { useLanguage } from "../context/LanguageContext";
+
+export const Navbar: React.FC = () => {
+  const { theme, toggleTheme } = useTheme();
+  const { language, setLanguage, t } = useLanguage();
+  const [isOpen, setIsOpen] = useState(false);
+  const [showNotifications, setShowNotifications] = useState(false);
+  const [showLangDropdown, setShowLangDropdown] = useState(false);
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  const navLinks = [
+    { name: t("buyerDashboard"), path: "/" },
+    { name: t("sellerDashboard"), path: "/seller" },
+  ];
+
+  const languagesList: Array<"English" | "Telugu" | "Hindi" | "Tamil" | "Kannada" | "Malayalam"> = [
+    "English", "Telugu", "Hindi", "Tamil", "Kannada", "Malayalam"
+  ];
+
+  const [notifications, setNotifications] = useState([
+    { id: 1, text: "New connection request from Sai Packaging", time: "5 mins ago", unread: true },
+    { id: 2, text: "Sri Lakshmi Enterprises accepted your connection request", time: "1 hour ago", unread: true },
+    { id: 3, text: "Structural TMT Rebars back in stock at RK Steel Mart", time: "Today, 10:00 AM", unread: false },
+    { id: 4, text: "New buyer Verma Food Industries contacted you", time: "Yesterday", unread: false }
+  ]);
+
+  const unreadCount = notifications.filter(n => n.unread).length;
+
+  const isActive = (path: string) => {
+    if (path === "/") {
+      return location.pathname === "/";
+    }
+    return location.pathname.startsWith(path) && location.pathname !== "/";
+  };
+
+  const handleMarkAllRead = () => {
+    setNotifications(prev => prev.map(n => ({ ...n, unread: false })));
+  };
+
+  return (
+    <nav className="sticky top-0 z-40 w-full glass-panel border-b border-app-border transition-all duration-300">
+      <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+        <div className="flex h-16 items-center justify-between">
+          
+          {/* Logo */}
+          <div className="flex items-center">
+            <Link to="/home" className="flex items-center gap-2 group">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-tr from-primary to-secondary text-white shadow-premium">
+                <Bot className="h-5 w-5 transition-transform duration-300 group-hover:rotate-6" />
+              </div>
+              <div className="flex flex-col">
+                <span className="text-lg font-bold tracking-tight text-app-text flex items-center gap-1">
+                  {t("heroHeading")}
+                  <ShieldCheck className="h-4 w-4 text-secondary fill-secondary/10" />
+                </span>
+                <span className="text-[10px] font-medium tracking-wider text-app-text-secondary uppercase -mt-1">
+                  {t("heroSubtitle")}
+                </span>
+              </div>
+            </Link>
+          </div>
+
+          {/* Desktop Nav */}
+          <div className="hidden md:flex items-center space-x-6">
+            {navLinks.map((link) => (
+              <Link
+                key={link.name}
+                to={link.path}
+                className={`text-sm font-semibold transition-all duration-200 hover:text-primary ${
+                  isActive(link.path)
+                    ? "text-primary border-b-2 border-primary py-1"
+                    : "text-app-text-secondary"
+                }`}
+              >
+                {link.name}
+              </Link>
+            ))}
+          </div>
+
+          {/* Right Side Controls */}
+          <div className="hidden md:flex items-center space-x-4">
+            
+            {/* Language Selector Dropdown */}
+            <div className="relative">
+              <button
+                onClick={() => { setShowLangDropdown(!showLangDropdown); setShowNotifications(false); }}
+                className="flex items-center gap-1.5 h-10 px-3 rounded-xl border border-app-border bg-app-card hover:bg-app-card-hover text-app-text text-xs font-bold transition-colors cursor-pointer select-none"
+              >
+                <Languages className="h-4 w-4 text-primary" />
+                <span>{language}</span>
+              </button>
+
+              {showLangDropdown && (
+                <div className="absolute right-0 mt-2 w-40 rounded-xl border border-app-border bg-app-card shadow-premium py-1 animate-fade-in-up">
+                  {languagesList.map((lang) => (
+                    <button
+                      key={lang}
+                      onClick={() => {
+                        setLanguage(lang);
+                        setShowLangDropdown(false);
+                      }}
+                      className={`w-full text-left px-4 py-2 text-xs hover:bg-app-bg transition-colors font-medium ${
+                        language === lang ? "text-primary font-bold" : "text-app-text"
+                      }`}
+                    >
+                      {lang}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Notification Center Trigger */}
+            <div className="relative">
+              <button
+                onClick={() => { setShowNotifications(!showNotifications); setShowLangDropdown(false); }}
+                className="relative flex h-10 w-10 items-center justify-center rounded-xl border border-app-border bg-app-card hover:bg-app-card-hover text-app-text transition-colors duration-200 cursor-pointer"
+                aria-label="View notifications"
+              >
+                <Bell className="h-4.5 w-4.5" />
+                {unreadCount > 0 && (
+                  <span className="absolute top-1.5 right-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-danger text-[9px] font-bold text-white leading-none">
+                    {unreadCount}
+                  </span>
+                )}
+              </button>
+
+              {showNotifications && (
+                <div className="absolute right-0 mt-2 w-80 rounded-xl border border-app-border bg-app-card shadow-premium-lg overflow-hidden animate-fade-in-up">
+                  <div className="bg-app-bg px-4 py-2.5 border-b border-app-border flex justify-between items-center text-xs font-bold">
+                    <span className="text-app-text">{t("notifCenter")}</span>
+                    <button 
+                      onClick={handleMarkAllRead} 
+                      className="text-primary hover:underline font-bold"
+                    >
+                      {t("allRead")}
+                    </button>
+                  </div>
+                  <div className="divide-y divide-app-border max-h-64 overflow-y-auto">
+                    {notifications.map((notif) => (
+                      <div key={notif.id} className={`p-3 text-xs space-y-1 hover:bg-app-bg transition-colors ${notif.unread ? 'bg-primary/5' : ''}`}>
+                        <p className="text-app-text leading-normal">{notif.text}</p>
+                        <span className="text-[10px] text-app-text-secondary block text-right">{notif.time}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Theme Toggle */}
+            <button
+              onClick={toggleTheme}
+              className="flex h-10 w-10 items-center justify-center rounded-xl border border-app-border bg-app-card hover:bg-app-card-hover text-app-text transition-colors duration-200 cursor-pointer"
+              aria-label="Toggle theme"
+            >
+              {theme === "light" ? (
+                <Moon className="h-4.5 w-4.5 text-primary" />
+              ) : (
+                <Sun className="h-4.5 w-4.5 text-accent" />
+              )}
+            </button>
+
+            {/* User Profile Badge */}
+            <button
+              onClick={() => navigate("/user")}
+              className="flex items-center gap-2 border-l border-app-border pl-4 hover:opacity-90 transition-opacity cursor-pointer text-left"
+            >
+              <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/10 border border-primary/20 text-primary text-xs font-bold">
+                <User className="h-4.5 w-4.5" />
+              </div>
+              <div className="flex flex-col text-left">
+                <span className="text-xs font-bold text-app-text leading-tight">Sai Kumar</span>
+                <span className="text-[9px] text-app-text-secondary font-medium uppercase leading-none">{t("buyerAccount")}</span>
+              </div>
+            </button>
+
+          </div>
+
+          {/* Mobile menu controls */}
+          <div className="md:hidden flex items-center gap-2">
+            <button
+              onClick={toggleTheme}
+              className="flex h-9 w-9 items-center justify-center rounded-lg border border-app-border bg-app-card text-app-text cursor-pointer"
+            >
+              {theme === "light" ? <Moon className="h-4 w-4 text-primary" /> : <Sun className="h-4 w-4 text-accent" />}
+            </button>
+            
+            <button
+              onClick={() => setIsOpen(!isOpen)}
+              className="inline-flex items-center justify-center rounded-lg p-2 text-app-text hover:bg-app-card-hover cursor-pointer"
+            >
+              {isOpen ? <X className="h-6 w-6" /> : <Menu className="h-6 w-6" />}
+            </button>
+          </div>
+
+        </div>
+      </div>
+
+      {/* Mobile Drawer menu */}
+      {isOpen && (
+        <div className="md:hidden animate-fade-in-up border-t border-app-border bg-app-card/95 backdrop-blur-lg">
+          <div className="space-y-1.5 px-4 py-3 pb-4">
+            {navLinks.map((link) => (
+              <Link
+                key={link.name}
+                to={link.path}
+                onClick={() => setIsOpen(false)}
+                className={`block rounded-lg px-3 py-2 text-base font-semibold ${
+                  isActive(link.path)
+                    ? "bg-primary/10 text-primary"
+                    : "text-app-text-secondary hover:bg-app-card-hover"
+                }`}
+              >
+                {link.name}
+              </Link>
+            ))}
+
+            {/* Mobile Language Selection */}
+            <div className="border-t border-app-border pt-3 mt-3">
+              <span className="text-xs font-bold text-app-text-secondary uppercase px-3">{t("speechLanguageInterface")}:</span>
+              <div className="grid grid-cols-3 gap-1.5 mt-2 px-3">
+                {languagesList.map(lang => (
+                  <button
+                    key={lang}
+                    onClick={() => {
+                      setLanguage(lang);
+                      setIsOpen(false);
+                    }}
+                    className={`py-1.5 text-xs rounded border text-center font-semibold cursor-pointer ${
+                      language === lang 
+                        ? "bg-primary text-white border-primary" 
+                        : "border-app-border text-app-text bg-app-bg"
+                    }`}
+                  >
+                    {lang}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Mobile User Profile details */}
+            <div 
+              onClick={() => { setIsOpen(false); navigate("/user"); }}
+              className="border-t border-app-border mt-4 pt-4 flex items-center gap-3 px-3 cursor-pointer"
+            >
+              <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/10 border border-primary/20 text-primary font-bold">
+                <User className="h-5 w-5" />
+              </div>
+              <div className="flex flex-col text-left">
+                <span className="text-sm font-bold text-app-text">Sai Kumar</span>
+                <span className="text-xs text-app-text-secondary">{t("buyerAccount")} • {t("profile")}</span>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      )}
+    </nav>
+  );
+};
