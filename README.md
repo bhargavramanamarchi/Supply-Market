@@ -18,7 +18,7 @@
 ## 🚀 Live Demo
 
 🔗 **Deployment:**  
-**https://YOUR-VERCEL-LINK.vercel.app**
+**https://supply-market.vercel.app/**
 
 ---
 
