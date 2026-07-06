@@ -3,10 +3,12 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Sun, Moon, Menu, X, Bot, ShieldCheck, User, Bell, Languages } from "lucide-react";
 import { useTheme } from "./ThemeContext";
 import { useLanguage } from "../context/LanguageContext";
+import { useAuth } from "../context/AuthContext";
 
 export const Navbar: React.FC = () => {
   const { theme, toggleTheme } = useTheme();
   const { language, setLanguage, t } = useLanguage();
+  const { user, openAuthModal } = useAuth();
   const [isOpen, setIsOpen] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
   const [showLangDropdown, setShowLangDropdown] = useState(false);
@@ -166,19 +168,31 @@ export const Navbar: React.FC = () => {
               )}
             </button>
 
-            {/* User Profile Badge */}
-            <button
-              onClick={() => navigate("/user")}
-              className="flex items-center gap-2 border-l border-app-border pl-4 hover:opacity-90 transition-opacity cursor-pointer text-left"
-            >
-              <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/10 border border-primary/20 text-primary text-xs font-bold">
-                <User className="h-4.5 w-4.5" />
-              </div>
-              <div className="flex flex-col text-left">
-                <span className="text-xs font-bold text-app-text leading-tight">Sai Kumar</span>
-                <span className="text-[9px] text-app-text-secondary font-medium uppercase leading-none">{t("buyerAccount")}</span>
-              </div>
-            </button>
+            {/* User Profile Badge or Sign In */}
+            {user ? (
+              <button
+                onClick={() => navigate("/user")}
+                className="flex items-center gap-2 border-l border-app-border pl-4 hover:opacity-90 transition-opacity cursor-pointer text-left animate-fade-in"
+              >
+                <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/10 border border-primary/20 text-primary text-xs font-bold">
+                  <span>{user.name.split(" ").map(n => n[0]).join("")}</span>
+                </div>
+                <div className="flex flex-col text-left">
+                  <span className="text-xs font-bold text-app-text leading-tight">{user.name}</span>
+                  <span className="text-[9px] text-app-text-secondary font-medium uppercase leading-none">
+                    {user.role === "Buyer Account" ? t("buyerAccount") : user.role === "Seller Account" ? t("sellerDashboard") : t("bothBadge")}
+                  </span>
+                </div>
+              </button>
+            ) : (
+              <button
+                onClick={openAuthModal}
+                className="flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-primary to-secondary hover:opacity-95 text-white px-4.5 py-2 text-xs font-bold shadow-premium cursor-pointer transition-all duration-200"
+              >
+                <User className="h-3.5 w-3.5" />
+                <span>{language === "Telugu" ? "లాగ్ ఇన్" : language === "Hindi" ? "साइन इन" : language === "Tamil" ? "உள்நுழை" : language === "Kannada" ? "ಸೈನ್ ಇನ್" : language === "Malayalam" ? "സൈൻ ഇൻ" : "Sign In"}</span>
+              </button>
+            )}
 
           </div>
 
@@ -244,19 +258,31 @@ export const Navbar: React.FC = () => {
               </div>
             </div>
 
-            {/* Mobile User Profile details */}
-            <div 
-              onClick={() => { setIsOpen(false); navigate("/user"); }}
-              className="border-t border-app-border mt-4 pt-4 flex items-center gap-3 px-3 cursor-pointer"
-            >
-              <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/10 border border-primary/20 text-primary font-bold">
-                <User className="h-5 w-5" />
+            {/* Mobile User Profile details or Sign In */}
+            {user ? (
+              <div 
+                onClick={() => { setIsOpen(false); navigate("/user"); }}
+                className="border-t border-app-border mt-4 pt-4 flex items-center gap-3 px-3 cursor-pointer animate-fade-in"
+              >
+                <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/10 border border-primary/20 text-primary font-bold">
+                  <User className="h-5 w-5" />
+                </div>
+                <div className="flex flex-col text-left">
+                  <span className="text-sm font-bold text-app-text">{user.name}</span>
+                  <span className="text-xs text-app-text-secondary">
+                    {user.role === "Buyer Account" ? t("buyerAccount") : user.role === "Seller Account" ? t("sellerDashboard") : t("bothBadge")} • {t("profile")}
+                  </span>
+                </div>
               </div>
-              <div className="flex flex-col text-left">
-                <span className="text-sm font-bold text-app-text">Sai Kumar</span>
-                <span className="text-xs text-app-text-secondary">{t("buyerAccount")} • {t("profile")}</span>
-              </div>
-            </div>
+            ) : (
+              <button
+                onClick={() => { setIsOpen(false); openAuthModal(); }}
+                className="w-full mt-4 pt-4 border-t border-app-border flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-primary to-secondary text-white py-2.5 text-sm font-bold shadow-premium cursor-pointer"
+              >
+                <User className="h-4 w-4" />
+                <span>{language === "Telugu" ? "లాగ్ ఇన్" : language === "Hindi" ? "साइन इन" : language === "Tamil" ? "உள்நுழை" : language === "Kannada" ? "ಸೈನ್ ಇನ್" : language === "Malayalam" ? "സൈൻ ഇൻ" : "Sign In"}</span>
+              </button>
+            )}
 
           </div>
         </div>

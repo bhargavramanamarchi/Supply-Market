@@ -8,6 +8,7 @@ import { UserDashboard } from "./pages/UserDashboard";
 import { HomePage } from "./pages/HomePage";
 import { Bot, ShieldCheck } from "lucide-react";
 import { useLanguage } from "./context/LanguageContext";
+import { ProtectedRoute } from "./components/ProtectedRoute";
 
 const App: React.FC = () => {
   const { t } = useLanguage();
@@ -23,9 +24,9 @@ const App: React.FC = () => {
           {/* Core Panel Content */}
           <main className="flex-grow">
             <Routes>
-              <Route path="/" element={<BuyerPage />} />
-              <Route path="/seller" element={<SellerPage />} />
-              <Route path="/user" element={<UserDashboard />} />
+              <Route path="/" element={<ProtectedRoute><BuyerPage /></ProtectedRoute>} />
+              <Route path="/seller" element={<ProtectedRoute><SellerPage /></ProtectedRoute>} />
+              <Route path="/user" element={<ProtectedRoute><UserDashboard /></ProtectedRoute>} />
               <Route path="/home" element={<HomePage />} />
             </Routes>
           </main>

@@ -21,11 +21,21 @@ import {
 } from "lucide-react";
 import { useTheme } from "../components/ThemeContext";
 import { useLanguage } from "../context/LanguageContext";
+import { useNavigate } from "react-router-dom";
+import { useAuth } from "../context/AuthContext";
+import { LogOut } from "lucide-react";
 
 export const UserDashboard: React.FC = () => {
   const { theme, toggleTheme } = useTheme();
   const { language, setLanguage, t } = useLanguage();
+  const navigate = useNavigate();
+  const { user, signOut } = useAuth();
   const [activeTab, setActiveTab] = useState<"profile" | "connections" | "activity" | "settings">("profile");
+
+  const handleSignOut = () => {
+    signOut();
+    navigate("/home");
+  };
 
   // Mock connections data
   const [connections, setConnections] = useState([
@@ -168,29 +178,29 @@ export const UserDashboard: React.FC = () => {
               <div className="flex flex-col sm:flex-row items-center gap-6 border-b border-app-border pb-6">
                 {/* Photo initials */}
                 <div className="flex h-20 w-20 items-center justify-center rounded-2xl bg-gradient-to-tr from-primary to-secondary text-white text-3xl font-extrabold shadow">
-                  SK
+                  {user ? user.name.split(" ").map(n => n[0]).join("") : "SK"}
                 </div>
                 <div className="text-center sm:text-left space-y-1">
                   <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2">
-                    <h2 className="text-xl font-bold text-app-text">Sai Kumar</h2>
+                    <h2 className="text-xl font-bold text-app-text">{user ? user.name : "Sai Kumar"}</h2>
                     <span className="inline-flex items-center gap-1 rounded bg-secondary/15 border border-secondary/35 text-[10px] font-bold text-secondary px-2 py-0.5">
                       <ShieldCheck className="h-3 w-3" />
-                      {t("bothBadge")}
+                      {user ? (user.role === "Buyer Account" ? t("buyerAccount") : user.role === "Seller Account" ? t("sellerDashboard") : t("bothBadge")) : t("bothBadge")}
                     </span>
                   </div>
-                  <p className="text-sm font-semibold text-primary">IndoCorp Agro Food Products</p>
-                  <p className="text-xs text-app-text-secondary">{t("procurementManager")}</p>
+                  <p className="text-sm font-semibold text-primary">{user?.company || "IndoCorp Agro Food Products"}</p>
+                  <p className="text-xs text-app-text-secondary">{user?.position || t("procurementManager")}</p>
                 </div>
               </div>
 
               {/* Bio Grid */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 text-sm">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 text-sm pb-6 border-b border-app-border">
                 <div className="space-y-4">
                   <div className="flex items-center gap-3">
                     <Mail className="h-4.5 w-4.5 text-primary" />
                     <div>
                       <span className="text-[10px] font-bold text-app-text-secondary uppercase block">{t("corporateEmail")}</span>
-                      <span className="font-semibold text-app-text">skumar@indocorp.com</span>
+                      <span className="font-semibold text-app-text">{user ? user.email : "skumar@indocorp.com"}</span>
                     </div>
                   </div>
 
@@ -220,6 +230,17 @@ export const UserDashboard: React.FC = () => {
                     </div>
                   </div>
                 </div>
+              </div>
+
+              {/* Professional Sign Out Button */}
+              <div className="flex justify-end pt-2">
+                <button
+                  onClick={handleSignOut}
+                  className="flex items-center gap-2 rounded-xl border border-danger/35 hover:border-danger bg-danger/5 hover:bg-danger/10 text-danger px-5 py-2.5 text-xs sm:text-sm font-bold shadow-sm transition-all cursor-pointer"
+                >
+                  <LogOut className="h-4.5 w-4.5" />
+                  <span>{t("logout")}</span>
+                </button>
               </div>
             </div>
           )}
