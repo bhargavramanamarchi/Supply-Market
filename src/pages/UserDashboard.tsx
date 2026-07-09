@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { 
   User, 
   Settings, 
@@ -22,15 +22,49 @@ import {
 import { useTheme } from "../components/ThemeContext";
 import { useLanguage } from "../context/LanguageContext";
 import { useNavigate } from "react-router-dom";
-import { useAuth } from "../context/AuthContext";
-import { LogOut } from "lucide-react";
+import { useAuth } from "../hooks/useAuth";
+import { LogOut, Edit2, Save, XCircle } from "lucide-react";
 
 export const UserDashboard: React.FC = () => {
   const { theme, toggleTheme } = useTheme();
   const { language, setLanguage, t } = useLanguage();
   const navigate = useNavigate();
-  const { user, signOut } = useAuth();
+  const { user, signOut, updateProfile } = useAuth();
   const [activeTab, setActiveTab] = useState<"profile" | "connections" | "activity" | "settings">("profile");
+
+  const [isEditing, setIsEditing] = useState(false);
+  const [editName, setEditName] = useState("");
+  const [editCompany, setEditCompany] = useState("");
+  const [editPhone, setEditPhone] = useState("");
+  const [editCity, setEditCity] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
+
+  useEffect(() => {
+    if (user) {
+      setEditName(user.name || "");
+      setEditCompany(user.company || "");
+      setEditPhone(user.phone || "");
+      setEditCity(user.city || "");
+    }
+  }, [user, isEditing]);
+
+  const handleSaveProfile = async () => {
+    if (!editName.trim()) {
+      alert("Name cannot be empty");
+      return;
+    }
+    setIsSaving(true);
+    const success = await updateProfile({
+      full_name: editName,
+      organization: editCompany,
+      phone: editPhone,
+      city: editCity
+    });
+    setIsSaving(false);
+    if (success) {
+      setIsEditing(false);
+    }
+  };
 
   const handleSignOut = () => {
     signOut();
@@ -180,16 +214,39 @@ export const UserDashboard: React.FC = () => {
                 <div className="flex h-20 w-20 items-center justify-center rounded-2xl bg-gradient-to-tr from-primary to-secondary text-white text-3xl font-extrabold shadow">
                   {user ? user.name.split(" ").map(n => n[0]).join("") : "SK"}
                 </div>
-                <div className="text-center sm:text-left space-y-1">
+                <div className="text-center sm:text-left space-y-1.5 flex-grow">
                   <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2">
-                    <h2 className="text-xl font-bold text-app-text">{user ? user.name : "Sai Kumar"}</h2>
+                    {isEditing ? (
+                      <input
+                        type="text"
+                        value={editName}
+                        onChange={(e) => setEditName(e.target.value)}
+                        className="rounded-xl border border-app-border bg-app-bg px-3 py-1.5 text-app-text text-sm font-semibold focus:border-primary outline-none"
+                        placeholder="Full Name"
+                      />
+                    ) : (
+                      <h2 className="text-xl font-bold text-app-text">{user ? user.name : "Sai Kumar"}</h2>
+                    )}
                     <span className="inline-flex items-center gap-1 rounded bg-secondary/15 border border-secondary/35 text-[10px] font-bold text-secondary px-2 py-0.5">
                       <ShieldCheck className="h-3 w-3" />
                       {user ? (user.role === "Buyer Account" ? t("buyerAccount") : user.role === "Seller Account" ? t("sellerDashboard") : t("bothBadge")) : t("bothBadge")}
                     </span>
                   </div>
-                  <p className="text-sm font-semibold text-primary">{user?.company || "IndoCorp Agro Food Products"}</p>
-                  <p className="text-xs text-app-text-secondary">{user?.position || t("procurementManager")}</p>
+                  
+                  <div className="space-y-1">
+                    {isEditing ? (
+                      <input
+                        type="text"
+                        value={editCompany}
+                        onChange={(e) => setEditCompany(e.target.value)}
+                        className="rounded-xl border border-app-border bg-app-bg px-3 py-1 text-primary text-xs font-semibold focus:border-primary outline-none w-full max-w-xs"
+                        placeholder="Organization Name"
+                      />
+                    ) : (
+                      <p className="text-sm font-semibold text-primary">{user?.company || "IndoCorp Agro Food Products"}</p>
+                    )}
+                    <p className="text-xs text-app-text-secondary">{user?.position || t("procurementManager")}</p>
+                  </div>
                 </div>
               </div>
 
@@ -206,9 +263,19 @@ export const UserDashboard: React.FC = () => {
 
                   <div className="flex items-center gap-3">
                     <Phone className="h-4.5 w-4.5 text-primary" />
-                    <div>
+                    <div className="flex-grow">
                       <span className="text-[10px] font-bold text-app-text-secondary uppercase block">{t("mobilePhone")}</span>
-                      <span className="font-semibold text-app-text">+91 90008 90009</span>
+                      {isEditing ? (
+                        <input
+                          type="text"
+                          value={editPhone}
+                          onChange={(e) => setEditPhone(e.target.value)}
+                          className="rounded-lg border border-app-border bg-app-bg px-2 py-0.5 text-xs text-app-text focus:border-primary outline-none mt-0.5"
+                          placeholder="Phone number"
+                        />
+                      ) : (
+                        <span className="font-semibold text-app-text">{user?.phone || "+91 90008 90009"}</span>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -216,9 +283,19 @@ export const UserDashboard: React.FC = () => {
                 <div className="space-y-4">
                   <div className="flex items-center gap-3">
                     <MapPin className="h-4.5 w-4.5 text-primary" />
-                    <div>
+                    <div className="flex-grow">
                       <span className="text-[10px] font-bold text-app-text-secondary uppercase block">{t("headquarters")}</span>
-                      <span className="font-semibold text-app-text">Hyderabad, Telangana</span>
+                      {isEditing ? (
+                        <input
+                          type="text"
+                          value={editCity}
+                          onChange={(e) => setEditCity(e.target.value)}
+                          className="rounded-lg border border-app-border bg-app-bg px-2 py-0.5 text-xs text-app-text focus:border-primary outline-none mt-0.5"
+                          placeholder="City, State"
+                        />
+                      ) : (
+                        <span className="font-semibold text-app-text">{user?.city || "Hyderabad, Telangana"}</span>
+                      )}
                     </div>
                   </div>
 
@@ -232,8 +309,36 @@ export const UserDashboard: React.FC = () => {
                 </div>
               </div>
 
-              {/* Professional Sign Out Button */}
-              <div className="flex justify-end pt-2">
+              {/* Action Buttons */}
+              <div className="flex justify-between items-center pt-2">
+                {isEditing ? (
+                  <div className="flex gap-2">
+                    <button
+                      onClick={handleSaveProfile}
+                      disabled={isSaving}
+                      className="flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-primary to-secondary hover:opacity-95 text-white px-4 py-2 text-xs sm:text-sm font-bold shadow-sm transition-all cursor-pointer disabled:opacity-50"
+                    >
+                      <Save className="h-4 w-4" />
+                      <span>{isSaving ? "Saving..." : "Save"}</span>
+                    </button>
+                    <button
+                      onClick={() => setIsEditing(false)}
+                      className="flex items-center gap-1.5 rounded-xl border border-app-border bg-app-card hover:bg-app-card-hover text-app-text px-4 py-2 text-xs sm:text-sm font-bold shadow-sm transition-colors cursor-pointer"
+                    >
+                      <XCircle className="h-4 w-4" />
+                      <span>Cancel</span>
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => setIsEditing(true)}
+                    className="flex items-center gap-1.5 rounded-xl border border-primary text-primary hover:bg-primary/5 px-4 py-2 text-xs sm:text-sm font-bold shadow-sm transition-all cursor-pointer"
+                  >
+                    <Edit2 className="h-4 w-4" />
+                    <span>Edit Profile</span>
+                  </button>
+                )}
+                
                 <button
                   onClick={handleSignOut}
                   className="flex items-center gap-2 rounded-xl border border-danger/35 hover:border-danger bg-danger/5 hover:bg-danger/10 text-danger px-5 py-2.5 text-xs sm:text-sm font-bold shadow-sm transition-all cursor-pointer"

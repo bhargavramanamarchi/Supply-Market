@@ -1,6 +1,76 @@
 import type { Supplier, Product } from "./supplierData";
-import { getStoredSuppliers } from "./supplierData";
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import { supabase } from "./supabase";
+
+export const getSupabaseSuppliers = async (): Promise<Supplier[]> => {
+  try {
+    const { data: dbSuppliers, error: supError } = await (supabase as any)
+      .from('suppliers')
+      .select('*');
+    if (supError) throw supError;
+
+    const { data: dbProducts, error: prodError } = await (supabase as any)
+      .from('products')
+      .select('*');
+    if (prodError) throw prodError;
+
+    const mapped: Supplier[] = (dbSuppliers as any[] || []).map((sup: any) => {
+      const supProds = (dbProducts as any[] || []).filter((p: any) => p.supplier_id === sup.id);
+      const products = supProds.map((p: any) => ({
+        id: p.id,
+        name: p.product_name,
+        category: p.category,
+        description: p.description || '',
+        price: Number(p.price),
+        unit: p.unit,
+        quantityAvailable: Number(p.quantity),
+        qualityGrade: (p.product_name.toLowerCase().includes('basmati') ? 'Superfine' :
+                      p.product_name.toLowerCase().includes('tmt') ? 'High Grade' :
+                      p.product_name.toLowerCase().includes('uno') ? 'High Grade' :
+                      p.product_name.toLowerCase().includes('shipping') ? 'Standard' : 'Premium') as any,
+        location: sup.location,
+        businessName: sup.company_name,
+        contactNumber: sup.contact_number || '',
+        availability: p.available ? "Immediate" : "Within 2 days",
+        businessHours: sup.business_hours || '09:00 AM - 06:00 PM'
+      }));
+
+      return {
+        id: sup.id,
+        businessName: sup.company_name,
+        rating: Number(sup.rating),
+        trustScore: (sup as any).trust_score ? Number((sup as any).trust_score) : 95,
+        location: sup.location,
+        contactNumber: sup.contact_number || '',
+        businessHours: sup.business_hours || '09:00 AM - 06:00 PM',
+        products
+      };
+    });
+
+    return mapped;
+  } catch (err) {
+    console.error("Error fetching suppliers from Supabase:", err);
+    return [];
+  }
+};
+
+export const getSupabaseProducts = async (): Promise<Product[]> => {
+  const sups = await getSupabaseSuppliers();
+  const allProds: Product[] = [];
+  sups.forEach(sup => {
+    sup.products.forEach(p => {
+      allProds.push({
+        ...p,
+        businessName: sup.businessName,
+        rating: sup.rating,
+        trustScore: sup.trustScore,
+        contactNumber: sup.contactNumber,
+        businessHours: sup.businessHours
+      } as any);
+    });
+  });
+  return allProds;
+};
 
 export interface MatchResult {
   bestSupplier: Supplier;
@@ -208,7 +278,7 @@ Return ONLY valid JSON. Do not include markdown formatting or extra dialogue.`;
     }
 
     // 3. Search storage database
-    const suppliers = getStoredSuppliers();
+    const suppliers = await getSupabaseSuppliers();
     const matches: Array<{
       supplier: Supplier;
       product: Product;
@@ -434,7 +504,7 @@ const fallbackKeywordMatch = async (query: string, lang: string): Promise<MatchR
   // Simulate network/API delay for a premium matching progress feel
   await new Promise((resolve) => setTimeout(resolve, 1500));
 
-  const suppliers = getStoredSuppliers();
+  const suppliers = await getSupabaseSuppliers();
   const normalizedQuery = query.toLowerCase();
 
   // 1. Identify category based on keywords

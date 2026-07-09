@@ -1,13 +1,21 @@
 import React, { createContext, useContext, useState, useEffect } from "react";
 import { User, Lock, Mail, Eye, EyeOff, ShieldCheck, X, Building, LayoutGrid } from "lucide-react";
 import { useLanguage } from "./LanguageContext";
+import { supabase } from "../services/supabase";
 
 export interface UserSession {
+  id: string;
   name: string;
   email: string;
   role: string;
   company?: string;
   position?: string;
+  phone?: string;
+  city?: string;
+  account_type: 'buyer' | 'seller' | 'both';
+  supplierId?: string;
+  supplierRating?: number;
+  supplierTrustScore?: number;
 }
 
 interface AuthContextProps {
@@ -19,6 +27,8 @@ interface AuthContextProps {
   registerUser: (name: string, email: string, password: string, company: string, role: string) => Promise<boolean>;
   signOut: () => void;
   showToast: (msg: string) => void;
+  loading: boolean;
+  updateProfile: (updatedData: { full_name: string; organization?: string; phone?: string; city?: string }) => Promise<boolean>;
 }
 
 const AuthContext = createContext<AuthContextProps | undefined>(undefined);
@@ -36,7 +46,7 @@ const AUTH_TRANSLATIONS: Record<string, Record<string, string>> = {
     nationalPortal: "National Supply Market Portal",
     secureGateway: "Secure Enterprise Gateway",
     pleaseSignIn: "Please sign in to continue.",
-    welcomeBack: "Welcome back, Sai Kumar!",
+    welcomeBack: "Welcome back, {name}!",
     welcomeNewUser: "Welcome to Supply Market, {name}!",
     signOutSuccess: "You have signed out successfully.",
     fullName: "Full Name",
@@ -59,16 +69,16 @@ const AUTH_TRANSLATIONS: Record<string, Record<string, string>> = {
     createAccount: "ఖాతాను సృష్టించండి",
     alreadyHaveAccount: "ఇప్పటికే ఖాతా ఉందా? లాగ్ ఇన్ చేయండి",
     nationalPortal: "జాతీయ సప్లై మార్కెట్ పోర్టల్",
-    secureGateway: "సురક્ષితమైన ఎంటర్‌ప్రైజ్ గేట్‌వే",
+    secureGateway: "సురక్షితమైన ఎంటర్‌ప్రైజ్ గేట్‌వే",
     pleaseSignIn: "దయచేసి కొనసాగడానికి సైన్ ఇన్ చేయండి.",
-    welcomeBack: "మరలా స్వాగతం, సాయి కుమార్!",
+    welcomeBack: "మరలా స్వాగతం, {name}!",
     welcomeNewUser: "సప్లై మార్కెట్‌కు స్వాగతం, {name}!",
     signOutSuccess: "మీరు విజయవంతంగా లాగ్ అవుట్ అయ్యారు.",
     fullName: "పూర్తి పేరు",
     orgName: "సంస్థ పేరు",
     accountType: "ఖాతా రకం",
     buyer: "కొనుగోలుదారు (Buyer)",
-    seller: "విక్రేത (Seller)",
+    seller: "విక్రేత (Seller)",
     both: "రెండు (Buyer & Seller)",
     invalidCredentials: "దయచేసి చెల్లుబాటు అయ్యే ఈమెయిల్ మరియు పాస్‌వర్డ్ నమోదు చేయండి.",
     forgotPasswordSent: "పాస్‌వర్డ్ రీసెట్ లింక్ మీ రిజిస్టర్డ్ ఈమెయిల్‌కు పంపబడింది.",
@@ -86,7 +96,7 @@ const AUTH_TRANSLATIONS: Record<string, Record<string, string>> = {
     nationalPortal: "राष्ट्रीय आपूर्ति बाजार पोर्टल",
     secureGateway: "सुरक्षित एंटरप्राइज गेटवे",
     pleaseSignIn: "जारी रखने के लिए कृपया साइन इन करें।",
-    welcomeBack: "वापसी पर आपका स्वागत है, साई कुमार!",
+    welcomeBack: "वापसी पर आपका स्वागत है, {name}!",
     welcomeNewUser: "सप्लाई मार्केट में आपका स्वागत है, {name}!",
     signOutSuccess: "आपने सफलतापूर्वक लॉग आउट कर लिया है।",
     fullName: "पूरा नाम",
@@ -111,7 +121,7 @@ const AUTH_TRANSLATIONS: Record<string, Record<string, string>> = {
     nationalPortal: "தேசிய விநியோக சந்தை போர்டல்",
     secureGateway: "பாதுகாப்பான நிறுவன நுழைவாயில்",
     pleaseSignIn: "தொடர தயவுசெய்து உள்நுழையவும்.",
-    welcomeBack: "மீண்டும் வருக, சாய் குமார்!",
+    welcomeBack: "மீண்டும் வருக, {name}!",
     welcomeNewUser: "விநியோக சந்தைக்கு உங்களை வரவேற்கிறோம், {name}!",
     signOutSuccess: "நீங்கள் வெற்றிகரமாக வெளியேறிவிட்டீர்கள்.",
     fullName: "முழு பெயர்",
@@ -134,19 +144,19 @@ const AUTH_TRANSLATIONS: Record<string, Record<string, string>> = {
     createAccount: "ಖಾತೆಯನ್ನು ರಚಿಸಿ",
     alreadyHaveAccount: "ಈಗಾಗಲೇ ಖಾತೆ ಇದೆಯೇ? ಸೈನ್ ಇನ್ ಮಾಡಿ",
     nationalPortal: "ರಾಷ್ಟ್ರೀಯ ಪೂರೈಕೆ ಮಾರುಕಟ್ಟೆ ಪೋರ್ಟಲ್",
-    secureGateway: "ಸುರಕ್ಷಿತ ಎಂಟರ್‌ಪ್ರೈಸ್ ಗೇಟ್‌ವೇ",
+    secureGateway: "ಸುರಕ್ಷಿತ ಎಂಟರ್‌ಪ್ರైಸ್ ಗೇಟ್‌ವೇ",
     pleaseSignIn: "ದಯವಿಟ್ಟು ಮುಂದುವರಿಯಲು ಸೈನ್ ಇನ್ ಮಾಡಿ.",
-    welcomeBack: "ಮರಳಿ ಸ್ವಗತ, ಸಾಯಿ ಕುಮಾರ್!",
-    welcomeNewUser: "ಪೂರೈಕೆ ಮಾರುಕಟ್ಟೆಗೆ ಸುಸ್ವಾಗത, {name}!",
+    welcomeBack: "ಮರಳಿ ಸ್ವಗತ, {name}!",
+    welcomeNewUser: "ಪೂರೈಕೆ ಮಾರುಕಟ್ಟೆಗೆ ಸುಸ್ವಾಗತ, {name}!",
     signOutSuccess: "ನೀವು ಯಶಸ್ವಿಯಾಗಿ ಸೈನ್ ಔಟ್ ಆಗಿದ್ದೀರಿ.",
     fullName: "ಪೂರ್ಣ ಹೆಸರು",
     orgName: "ಸಂಸ್ಥೆಯ ಹೆಸರು",
     accountType: "ಖಾತೆಯ ಪ್ರಕಾರ",
     buyer: "ಖರೀದಿದಾರ",
     seller: "ಮಾರಾಟಗಾರ",
-    both: "ಖರೀದಿದార ಮತ್ತು ಮಾರಾಟಗಾರ",
-    invalidCredentials: "ದಯವಿಟ್ಟು ಮಾನ್ಯ ಇಮೇಲ್ ಮತ್ತು ಪಾಸ್‌ವರ್ಡ್ ನമೂದಿಸಿ.",
-    forgotPasswordSent: "ಪಾಸ್‌ವರ್ಡ್ ಮರುಹೊಂದಿಸುವ ಲಿಂಕ್ ಅನ್ನು ನಿಮ್ಮ ನೋಂದಾಯಿತ ಇമേಲ್‌ಗೆ ಕಳುಹಿಸಲಾಗಿದೆ.",
+    both: "ಖರೀದಿದಾರ ಮತ್ತು ಮಾರಾಟಗಾರ",
+    invalidCredentials: "ದಯವಿಟ್ಟು ಮಾನ್ಯ ಇಮೇಲ್ ಮತ್ತು ಪಾಸ್‌ವರ್ಡ್ ನಮೂದಿಸಿ.",
+    forgotPasswordSent: "ಪಾಸ್‌ವರ್ಡ್ ಮರುಹೊಂದಿಸುವ ಲಿಂಕ್ ಅನ್ನು ನಿಮ್ಮ ನೋಂದಾಯಿತ ಇಮೇಲ್‌ಗೆ ಕಳುಹಿಸಲಾಗಿದೆ.",
     close: "ಮುಚ್ಚಿ"
   },
   Malayalam: {
@@ -161,7 +171,7 @@ const AUTH_TRANSLATIONS: Record<string, Record<string, string>> = {
     nationalPortal: "ദേശീയ വിതരണ വിപണി പോർട്ടൽ",
     secureGateway: "സുരക്ഷിത എൻ്റർപ്രൈസ് ഗേറ്റ്‌വേ",
     pleaseSignIn: "തുടരാൻ ദയവായി സൈൻ ഇൻ ചെയ്യുക.",
-    welcomeBack: "വീണ്ടും സ്വാഗതം, സായി കുമാർ!",
+    welcomeBack: "വീണ്ടും സ്വാഗതം, {name}!",
     welcomeNewUser: "സപ്ലൈ മാർക്കറ്റിലേക്ക് സ്വാഗതം, {name}!",
     signOutSuccess: "നിങ്ങൾ വിജയകരമായി ലോഗ് ഔട്ട് ചെയ്തു.",
     fullName: "പൂർണ്ണമായ പേര്",
@@ -181,6 +191,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [user, setUser] = useState<UserSession | null>(null);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
   
   // Modal states
   const [isRegisterMode, setIsRegisterMode] = useState(false);
@@ -203,7 +214,116 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return langDict[key] || AUTH_TRANSLATIONS["English"][key] || key;
   };
 
-  // Load session from localStorage on startup
+  const fetchAndCacheUser = async (userId: string) => {
+    try {
+      const { data: dbUser, error } = await (supabase as any)
+        .from('users')
+        .select('*')
+        .eq('id', userId)
+        .maybeSingle();
+
+      if (error) {
+        console.error("Error fetching db user profile:", error);
+        return;
+      }
+
+      let userProfile = dbUser;
+      if (!userProfile) {
+        const { data: { user: authUser } } = await supabase.auth.getUser();
+        if (authUser) {
+          const email = authUser.email || "";
+          const name = email.split('@')[0] || 'User';
+
+          const { data: createdUser, error: insertError } = await (supabase as any)
+            .from('users')
+            .insert({
+              id: userId,
+              full_name: name,
+              email: email,
+              organization: null,
+              phone: '',
+              account_type: 'both',
+              city: 'Hyderabad, Telangana'
+            })
+            .select()
+            .single();
+
+          if (insertError) {
+            console.error("Error creating user profile:", insertError);
+            return;
+          }
+          userProfile = createdUser;
+        }
+      }
+
+      if (userProfile) {
+        let supplierId: string | undefined = undefined;
+        let rating = 5.0;
+        let trustScore = 95;
+
+        if (userProfile.account_type === 'seller' || userProfile.account_type === 'both') {
+          const { data: supplier } = await (supabase as any)
+            .from('suppliers')
+            .select('*')
+            .eq('user_id', userId)
+            .maybeSingle();
+
+          if (supplier) {
+            supplierId = supplier.id;
+            rating = Number(supplier.rating);
+            trustScore = Number(supplier.trust_score);
+          } else {
+            const { data: createdSupplier, error: supplierError } = await (supabase as any)
+              .from('suppliers')
+              .insert({
+                user_id: userId,
+                company_name: `${userProfile.full_name}'s Company`,
+                location: 'Hyderabad, Telangana',
+                verified: false,
+                rating: 5.0,
+                trust_score: 95.0,
+                contact_number: '+91 90008 90009',
+                business_hours: '09:00 AM - 06:00 PM'
+              })
+              .select()
+              .single();
+
+            if (!supplierError && createdSupplier) {
+              supplierId = createdSupplier.id;
+              rating = Number(createdSupplier.rating);
+              trustScore = Number(createdSupplier.trust_score);
+            }
+          }
+        }
+
+        let displayRole = "Buyer & Seller";
+        if (userProfile.account_type === "buyer") displayRole = "Buyer Account";
+        else if (userProfile.account_type === "seller") displayRole = "Seller Account";
+
+        const mappedSession: UserSession = {
+          id: userProfile.id,
+          name: userProfile.full_name,
+          email: userProfile.email,
+          role: displayRole,
+          company: userProfile.organization || undefined,
+          position: userProfile.account_type === "buyer" ? "Procurement Specialist" : "Sales Representative",
+          phone: userProfile.phone || undefined,
+          city: userProfile.city || undefined,
+          account_type: userProfile.account_type,
+          supplierId,
+          supplierRating: rating,
+          supplierTrustScore: trustScore
+        };
+
+        setUser(mappedSession);
+        localStorage.setItem("supply_market_session", JSON.stringify(mappedSession));
+      }
+    } catch (err) {
+      console.error("Error caching user profile:", err);
+    }
+  };
+
+  // Load session from localStorage on startup & listen to auth state
   useEffect(() => {
     const savedSession = localStorage.getItem("supply_market_session");
     if (savedSession) {
@@ -213,6 +333,39 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         localStorage.removeItem("supply_market_session");
       }
     }
+
+    const checkSession = async () => {
+      try {
+        const { data: { session }, error } = await supabase.auth.getSession();
+        if (error) throw error;
+
+        if (session && session.user) {
+          await fetchAndCacheUser(session.user.id);
+        } else {
+          setUser(null);
+          localStorage.removeItem("supply_market_session");
+        }
+      } catch (err) {
+        console.error("Error checking session:", err);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    checkSession();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      if (session && session.user) {
+        await fetchAndCacheUser(session.user.id);
+      } else {
+        setUser(null);
+        localStorage.removeItem("supply_market_session");
+      }
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
   }, []);
 
   // Clear toast message after delay
@@ -251,22 +404,30 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setFormError(at("invalidCredentials"));
       return false;
     }
+    setFormError(null);
 
-    const mockUser: UserSession = {
-      name: "Sai Kumar",
-      email: inputEmail,
-      role: "Buyer & Seller",
-      company: "IndoCorp Agro Food Products",
-      position: "Procurement Manager"
-    };
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: inputEmail,
+        password: inputPassword,
+      });
 
-    setUser(mockUser);
-    localStorage.setItem("supply_market_session", JSON.stringify(mockUser));
-    setIsAuthModalOpen(false);
-    
-    const welcomeMsg = at("welcomeBack").replace("{name}", mockUser.name);
-    setToastMessage(welcomeMsg);
-    return true;
+      if (error) throw error;
+
+      if (data.user) {
+        await fetchAndCacheUser(data.user.id);
+        window.location.href = "/";
+      }
+
+      setIsAuthModalOpen(false);
+      const welcomeMsg = at("welcomeBack").replace("{name}", data.user?.email || "User");
+      setToastMessage(welcomeMsg);
+      return true;
+    } catch (err: any) {
+      console.error("Sign in error:", err);
+      setFormError(err.message || at("invalidCredentials"));
+      return false;
+    }
   };
 
   const registerUser = async (name: string, inputEmail: string, inputPass: string, company: string, role: string): Promise<boolean> => {
@@ -274,42 +435,129 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setFormError(at("invalidCredentials"));
       return false;
     }
+    setFormError(null);
 
-    let displayRole = "Buyer & Seller";
-    if (role === "buyer") displayRole = "Buyer Account";
-    else if (role === "seller") displayRole = "Seller Account";
+    try {
+      const { data, error } = await supabase.auth.signUp({
+        email: inputEmail,
+        password: inputPass,
+      });
 
-    const mockUser: UserSession = {
-      name: name,
-      email: inputEmail,
-      role: displayRole,
-      company: company || "Enterprise Partner",
-      position: role === "buyer" ? "Procurement Specialist" : "Sales Representative"
-    };
+      if (error) throw error;
 
-    setUser(mockUser);
-    localStorage.setItem("supply_market_session", JSON.stringify(mockUser));
-    setIsAuthModalOpen(false);
-    
-    const welcomeMsg = at("welcomeNewUser").replace("{name}", name);
-    setToastMessage(welcomeMsg);
-    return true;
+      if (!data.user) {
+        throw new Error("Registration failed. Please check credentials.");
+      }
+
+      const userId = data.user.id;
+
+      // Create users record in Supabase
+      const { error: userError } = await (supabase as any)
+        .from('users')
+        .insert({
+          id: userId,
+          full_name: name,
+          email: inputEmail,
+          organization: company || null,
+          phone: '',
+          account_type: role as 'buyer' | 'seller' | 'both',
+          city: 'Hyderabad, Telangana',
+        });
+
+      if (userError) throw userError;
+
+      // Create suppliers record if role is seller or both
+      if (role === 'seller' || role === 'both') {
+        const { error: supplierError } = await (supabase as any)
+          .from('suppliers')
+          .insert({
+            user_id: userId,
+            company_name: company || `${name}'s Company`,
+            location: 'Hyderabad, Telangana',
+            verified: false,
+            rating: 5.0,
+            trust_score: 95.0,
+            contact_number: '+91 90008 90009',
+            business_hours: '09:00 AM - 06:00 PM'
+          });
+
+        if (supplierError) throw supplierError;
+      }
+
+      await fetchAndCacheUser(userId);
+      setIsAuthModalOpen(false);
+      
+      const welcomeMsg = at("welcomeNewUser").replace("{name}", name);
+      setToastMessage(welcomeMsg);
+      window.location.href = "/";
+      return true;
+    } catch (err: any) {
+      console.error("Registration error:", err);
+      setFormError(err.message || "Registration failed.");
+      return false;
+    }
   };
 
-  const signOut = () => {
-    setUser(null);
-    localStorage.removeItem("supply_market_session");
-    setToastMessage(at("signOutSuccess"));
+  const updateProfile = async (updatedData: { full_name: string; organization?: string; phone?: string; city?: string }): Promise<boolean> => {
+    if (!user) return false;
+    try {
+      // Update public.users table
+      const { error: userError } = await (supabase as any)
+        .from('users')
+        .update({
+          full_name: updatedData.full_name,
+          organization: updatedData.organization || null,
+          phone: updatedData.phone || null,
+          city: updatedData.city || null
+        })
+        .eq('id', user.id);
+
+      if (userError) throw userError;
+
+      // Update public.suppliers table if applicable
+      if (user.supplierId) {
+        const { error: supplierError } = await (supabase as any)
+          .from('suppliers')
+          .update({
+            company_name: updatedData.organization || 'Enterprise Partner',
+            location: updatedData.city || 'Hyderabad, Telangana'
+          })
+          .eq('id', user.supplierId);
+
+        if (supplierError) throw supplierError;
+      }
+
+      // Re-fetch and update state cache
+      await fetchAndCacheUser(user.id);
+      showToast("Profile updated successfully.");
+      return true;
+    } catch (err: any) {
+      console.error("Profile update failed:", err);
+      showToast(err.message || "Profile update failed.");
+      return false;
+    }
   };
 
-  const handleFormSubmit = (e: React.FormEvent) => {
+  const signOut = async () => {
+    try {
+      await supabase.auth.signOut();
+    } catch (err) {
+      console.error("Sign out error:", err);
+    } finally {
+      setUser(null);
+      localStorage.removeItem("supply_market_session");
+      setToastMessage(at("signOutSuccess"));
+    }
+  };
+
+  const handleFormSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError(null);
 
     if (isRegisterMode) {
-      registerUser(regName, regEmail, regPassword, regOrg, regType);
+      await registerUser(regName, regEmail, regPassword, regOrg, regType);
     } else {
-      signIn(email, password);
+      await signIn(email, password);
     }
   };
 
@@ -328,7 +576,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         signIn,
         registerUser,
         signOut,
-        showToast
+        showToast,
+        loading,
+        updateProfile
       }}
     >
       {children}

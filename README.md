@@ -8,6 +8,8 @@
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?logo=typescript)
 ![Vite](https://img.shields.io/badge/Vite-646CFF?logo=vite)
 ![Gemini AI](https://img.shields.io/badge/Google-Gemini_AI-4285F4?logo=google)
+![Supabase](https://img.shields.io/badge/Supabase-Database_&_Auth-3ECF8E?logo=supabase)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-4169E1?logo=postgresql)
 ![Murf AI](https://img.shields.io/badge/Murf-AI_Voice-8A2BE2)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
@@ -15,22 +17,23 @@
 
 ---
 
-## 🚀 Live Demo
+# 🚀 Live Demo
 
-🔗 **Deployment:**  
-**https://supply-market.vercel.app/**
+🔗 **Deployment**
+
+https://supply-market.vercel.app/
 
 ---
 
-## 📌 Overview
+# 📌 Overview
 
-Supply Market AI is an intelligent supplier discovery platform that helps buyers connect with trusted suppliers using Artificial Intelligence.
+Supply Market AI is an AI-powered supplier discovery and business networking platform designed for Indian manufacturers, MSMEs, wholesalers, and procurement teams.
 
-Instead of manually searching hundreds of suppliers, users simply describe their requirement in natural language or voice.
+Instead of manually searching hundreds of suppliers, buyers simply describe their requirement using natural language or voice.
 
-The AI understands the request, recommends the best supplier, explains why it was selected, and can even respond in multiple Indian languages using AI-generated voice.
+The platform uses Google Gemini AI to understand the requirement, searches a live supplier database, ranks the best suppliers, and recommends the most suitable match with an explanation.
 
-The platform also provides dedicated dashboards for buyers and sellers, allowing both sides to build trusted business connections.
+With Supabase Authentication and PostgreSQL Database, users can securely register, log in, manage products, store buyer requests, and access real-time supplier information.
 
 ---
 
@@ -39,56 +42,81 @@ The platform also provides dedicated dashboards for buyers and sellers, allowing
 ## 🛒 Buyer Dashboard
 
 - AI-powered supplier recommendations
-- Search using text or voice
+- Natural language search
+- Voice search
 - Multi-language support
-- AI voice responses
+- AI-generated recommendation summary
 - Manual supplier browsing
 - Supplier comparison
 - Save favourite suppliers
 - Direct supplier connection
-- AI recommendation summary
 
 ---
 
 ## 🏪 Seller Dashboard
 
 - Product management
-- Order overview
-- Customer analytics
-- Revenue summary
-- AI Business Insights
-- Sales AI Assistant
-- Inventory recommendations
+- Inventory management
+- Business analytics
+- Customer insights
+- AI business recommendations
+- Revenue overview
+- Sales assistant
 - Buyer activity tracking
-- Business performance suggestions
 
 ---
 
-## 👤 User Dashboard
+## 👤 User Management
 
-- User profile
-- Buyer history
-- Seller history
-- Connected suppliers
-- Connected buyers
-- Follow / Unfollow suppliers
-- Business activity timeline
+- Secure Sign Up
+- Secure Login
+- Authentication using Supabase Auth
+- User Profile Management
+- Buyer & Seller roles
+- Persistent user sessions
 
 ---
 
 ## 🤖 AI Assistant
 
 - Understands natural language
+- Google Gemini AI
 - Voice input
-- AI voice output
-- Multi-language conversation
-- Smart supplier selection
-- Explains recommendation
-- Suggests alternative suppliers
+- AI Voice output
+- Smart supplier matching
+- Recommendation explanation
+- Alternative supplier suggestions
 
 ---
 
-## 🌍 Multi-language Support
+# 🔐 Authentication & Database
+
+Supply Market AI now uses **Supabase** to provide production-ready backend services.
+
+### Authentication
+
+- Email & Password Login
+- Secure User Sessions
+- Role-based Users
+- Persistent Authentication
+
+### Database
+
+- PostgreSQL Database
+- Real-time Supplier Storage
+- Product Inventory Storage
+- Buyer Requests Storage
+- AI Recommendation History
+
+### Security
+
+- Row Level Security (RLS)
+- Authenticated User Access
+- Secure Database Policies
+
+---
+
+# 🌍 Multi-language Support
 
 Supported Languages
 
@@ -107,18 +135,20 @@ Supported Languages
 Buyer Requirement
         │
         ▼
- Google Gemini AI
+Google Gemini AI
         │
 Extract Product Details
         │
         ▼
-Supplier Matching Engine
+Supabase PostgreSQL Database
+        │
+Retrieve Matching Suppliers
         │
         ▼
-Supplier Ranking
+Supplier Ranking Engine
         │
         ▼
-Recommendation Generation
+AI Recommendation
         │
         ▼
 Translation Engine
@@ -135,46 +165,63 @@ Murf AI Voice Response
 Buyer
    │
    ▼
-React Frontend
+React + TypeScript Frontend
    │
    ▼
-Gemini AI
+Supabase Authentication
    │
    ▼
-Supplier Database
+Google Gemini AI
+   │
+   ▼
+Supabase PostgreSQL Database
+   │
+   ▼
+Supplier Matching Engine
    │
    ▼
 Recommendation Engine
    │
    ▼
-Murf AI
-   │
-   ▼
-Voice Response
+Murf AI Voice Output
 ```
 
 ---
 
 # 🛠️ Tech Stack
 
-### Frontend
+## Frontend
 
 - React 19
 - TypeScript
 - Vite
 - CSS
 
-### AI
+---
+
+## Backend
+
+- Supabase
+- PostgreSQL
+- Supabase Authentication
+- Row Level Security (RLS)
+
+---
+
+## Artificial Intelligence
 
 - Google Gemini API
-- Murf AI
 
-### Voice
+---
+
+## Voice AI
 
 - Browser Speech Recognition
 - Murf AI Text-to-Speech
 
-### Deployment
+---
+
+## Deployment
 
 - Vercel
 
@@ -182,7 +229,7 @@ Voice Response
 
 # 📂 Project Structure
 
-```
+```text
 Supply-Market/
 │
 ├── public/
@@ -191,6 +238,7 @@ Supply-Market/
 ├── assets/
 ├── components/
 ├── context/
+├── hooks/
 ├── pages/
 │   ├── HomePage
 │   ├── BuyerDashboard
@@ -202,8 +250,12 @@ Supply-Market/
 │   ├── murfService
 │   ├── speechService
 │   ├── localization
+│   ├── supabase
 │   └── supplierData
 │
+├── types/
+├── schema.sql
+├── seed.sql
 ├── App.tsx
 ├── main.tsx
 ├── .env.example
@@ -214,19 +266,19 @@ Supply-Market/
 
 # ⚙️ Installation
 
-Clone the repository
+Clone Repository
 
 ```bash
 git clone https://github.com/YOUR_USERNAME/Supply-Market.git
 ```
 
-Move into the project
+Move into Project
 
 ```bash
 cd Supply-Market
 ```
 
-Install dependencies
+Install Dependencies
 
 ```bash
 npm install
@@ -237,9 +289,12 @@ Create `.env`
 ```env
 VITE_GEMINI_API_KEY=your_gemini_api_key
 VITE_MURF_API_KEY=your_murf_api_key
+
+VITE_SUPABASE_URL=your_supabase_project_url
+VITE_SUPABASE_ANON_KEY=your_supabase_anon_key
 ```
 
-Run locally
+Run Project
 
 ```bash
 npm run dev
@@ -251,8 +306,29 @@ npm run dev
 
 | Variable | Description |
 |-----------|-------------|
-| VITE_GEMINI_API_KEY | Google Gemini AI API |
-| VITE_MURF_API_KEY | Murf AI Voice API |
+| VITE_GEMINI_API_KEY | Google Gemini API |
+| VITE_MURF_API_KEY | Murf AI API |
+| VITE_SUPABASE_URL | Supabase Project URL |
+| VITE_SUPABASE_ANON_KEY | Supabase Anonymous Key |
+
+---
+
+# 🗄️ Database Schema
+
+The application uses PostgreSQL tables:
+
+- users
+- suppliers
+- products
+- buyerrequests
+- airecommendations
+
+The repository also includes
+
+- schema.sql
+- seed.sql
+
+to initialize the complete database with demo data.
 
 ---
 
@@ -262,32 +338,34 @@ npm run dev
 - Supplier Discovery
 - MSMEs
 - Wholesale Businesses
-- Construction Industry
 - Agriculture Supply Chain
 - Textile Industry
+- Construction Industry
 - Packaging Industry
 
 ---
 
 # 📸 Screenshots
 
-Add screenshots here
+Include screenshots of
 
 - Home Page
 - Buyer Dashboard
 - Seller Dashboard
-- AI Assistant
+- AI Search
+- Authentication
 - User Dashboard
+- Supplier Search Results
 
 ---
 
 # 🔮 Future Enhancements
 
 - Live Supplier Verification
-- Payment Integration
 - Order Tracking
+- Payment Gateway
 - AI Price Prediction
-- Demand Forecasting
+- AI Demand Forecasting
 - GST Invoice Generation
 - ERP Integration
 - WhatsApp Notifications
@@ -299,19 +377,16 @@ Add screenshots here
 
 Contributions are welcome.
 
-Fork the repository
-
-Create a new branch
-
-Commit your changes
-
-Open a Pull Request
+1. Fork the repository
+2. Create a feature branch
+3. Commit your changes
+4. Open a Pull Request
 
 ---
 
 # 📄 License
 
-This project is licensed under the MIT License.
+Licensed under the MIT License.
 
 ---
 
@@ -325,7 +400,7 @@ https://github.com/bhargavramanamarchi
 
 ---
 
-## ⭐ Support
+# ⭐ Support
 
 If you found this project useful,
 
@@ -335,4 +410,4 @@ Share your feedback
 
 Contribute improvements
 
-Thank you for visiting the project.
+Thank you for visiting Supply Market AI.

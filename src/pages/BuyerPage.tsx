@@ -15,11 +15,13 @@ import {
   MessageSquare
 } from "lucide-react";
 import type { MatchResult } from "../services/geminiService";
-import { matchSuppliersAI } from "../services/geminiService";
+import { matchSuppliersAI, getSupabaseProducts, getSupabaseSuppliers } from "../services/geminiService";
 import { speakText, stopSpeaking, getSpeechRecognition } from "../services/speechService";
 import type { Supplier } from "../services/supplierData";
-import { getStoredSuppliers, getAllProducts } from "../services/supplierData";
+import { getStoredSuppliers } from "../services/supplierData";
 import { useLanguage } from "../context/LanguageContext";
+import { useAuth } from "../hooks/useAuth";
+import { supabase } from "../services/supabase";
 
 const AI_STEPS = [
   "Understanding your requirement",
@@ -45,10 +47,24 @@ const SUGGESTED_QUERIES: Record<string, string> = {
 
 export const BuyerPage: React.FC = () => {
   const { language, t } = useLanguage();
+  const { user } = useAuth();
   const [query, setQuery] = useState("");
   const [isSearching, setIsSearching] = useState(false);
   const [currentStep, setCurrentStep] = useState(0);
   const [searchResult, setSearchResult] = useState<MatchResult | null>(null);
+  const [allProducts, setAllProducts] = useState<any[]>([]);
+
+  useEffect(() => {
+    const loadProducts = async () => {
+      try {
+        const prods = await getSupabaseProducts();
+        setAllProducts(prods);
+      } catch (err) {
+        console.error("Error loading products for browse list:", err);
+      }
+    };
+    loadProducts();
+  }, [searchResult]);
 
   // Voice Assistant state (Centered modal)
   const [isVoiceOpen, setIsVoiceOpen] = useState(false);
@@ -162,9 +178,47 @@ export const BuyerPage: React.FC = () => {
     }, 400);
 
     try {
+      // 1. Insert search query into BuyerRequests table in Supabase
+      let requestId: string | null = null;
+      if (user) {
+        const { data: requestData, error: requestError } = await (supabase as any)
+          .from('buyerrequests')
+          .insert({
+            buyer_id: user.id,
+            requirement: query,
+            language: language,
+            status: 'active'
+          })
+          .select('id')
+          .single();
+
+        if (requestError) {
+          console.error("Error inserting buyer request:", requestError);
+        } else if (requestData) {
+          requestId = requestData.id;
+        }
+      }
+
+      // 2. Perform Gemini AI matching (fetching active products from Supabase)
       const results = await matchSuppliersAI(query, language);
       clearInterval(stepInterval);
       
+      // 3. Save AI recommendation in Supabase if a valid supplier is matched
+      if (requestId && results.bestSupplier && results.bestSupplier.id !== 'mock_assistant' && results.bestSupplier.id !== 'mock_no_match') {
+        const bestMatchScore = results.allMatches.find(m => m.supplier.id === results.bestSupplier.id)?.score || 95;
+        const { error: recomError } = await (supabase as any)
+          .from('airecommendations')
+          .insert({
+            request_id: requestId,
+            supplier_id: results.bestSupplier.id,
+            confidence_score: Number((bestMatchScore > 100 ? 100 : bestMatchScore < 0 ? 0 : bestMatchScore).toFixed(2))
+          });
+
+        if (recomError) {
+          console.error("Error inserting AI recommendation:", recomError);
+        }
+      }
+
       setCurrentStep(AI_STEPS.length - 1);
       setTimeout(() => {
         setIsSearching(false);
@@ -239,8 +293,7 @@ export const BuyerPage: React.FC = () => {
     });
   };
 
-  // manual browse table
-  const allProducts = getAllProducts();
+  // manual browse table loaded dynamically from state
   
   const filteredProducts = allProducts.filter(prod => {
     const matchesSearch = 
@@ -929,11 +982,11 @@ export const BuyerPage: React.FC = () => {
                 </button>
 
                 <button
-                  onClick={() => {
-                    const stored = getStoredSuppliers();
-                    const alternative = stored.find(s => s.id !== searchResult.bestSupplier.id && s.products.some(p => p.category === searchResult.bestProduct.category));
+                  onClick={async () => {
+                    const stored = await getSupabaseSuppliers();
+                    const alternative = stored.find((s: any) => s.id !== searchResult.bestSupplier.id && s.products.some((p: any) => p.category === searchResult.bestProduct.category));
                     if (alternative) {
-                      const altProd = alternative.products.find(p => p.category === searchResult.bestProduct.category)!;
+                      const altProd = alternative.products.find((p: any) => p.category === searchResult.bestProduct.category)!;
                       const altResult: MatchResult = {
                         ...searchResult,
                         bestSupplier: alternative,
