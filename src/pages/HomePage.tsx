@@ -14,10 +14,12 @@ import {
   Volume2
 } from "lucide-react";
 import { useLanguage } from "../context/LanguageContext";
+import { useAuth } from "../hooks/useAuth";
 
 export const HomePage: React.FC = () => {
   const navigate = useNavigate();
   const { t } = useLanguage();
+  const { user } = useAuth();
 
   const steps = [
     {
@@ -106,19 +108,23 @@ export const HomePage: React.FC = () => {
           </p>
 
           <div className="flex flex-col sm:flex-row justify-center items-center gap-3.5 pt-4">
-            <button
-              onClick={() => navigate("/")}
-              className="w-full sm:w-auto flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-primary to-secondary hover:opacity-95 text-white px-6 py-3.5 text-sm font-bold shadow-premium cursor-pointer"
-            >
-              <span>{t("goToBuyer")}</span>
-              <ArrowRight className="h-4 w-4" />
-            </button>
-            <button
-              onClick={() => navigate("/seller")}
-              className="w-full sm:w-auto flex items-center justify-center gap-2 rounded-xl border border-app-border bg-app-card hover:bg-app-card-hover text-app-text px-6 py-3.5 text-sm font-bold shadow-sm transition-colors cursor-pointer"
-            >
-              <span>{t("goToSeller")}</span>
-            </button>
+            {(!user || user.account_type === "buyer" || user.account_type === "both") && (
+              <button
+                onClick={() => navigate("/")}
+                className="w-full sm:w-auto flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-primary to-secondary hover:opacity-95 text-white px-6 py-3.5 text-sm font-bold shadow-premium cursor-pointer"
+              >
+                <span>{t("goToBuyer")}</span>
+                <ArrowRight className="h-4 w-4" />
+              </button>
+            )}
+            {(!user || user.account_type === "seller" || user.account_type === "both") && (
+              <button
+                onClick={() => navigate("/seller")}
+                className="w-full sm:w-auto flex items-center justify-center gap-2 rounded-xl border border-app-border bg-app-card hover:bg-app-card-hover text-app-text px-6 py-3.5 text-sm font-bold shadow-sm transition-colors cursor-pointer"
+              >
+                <span>{t("goToSeller")}</span>
+              </button>
+            )}
           </div>
         </div>
       </section>

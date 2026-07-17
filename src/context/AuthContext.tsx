@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from "react";
-import { User, Lock, Mail, Eye, EyeOff, ShieldCheck, X, Building, LayoutGrid } from "lucide-react";
+import { User, Lock, Mail, Eye, EyeOff, ShieldCheck, X, Building, LayoutGrid, Phone, MapPin } from "lucide-react";
 import { useLanguage } from "./LanguageContext";
 import { supabase } from "../services/supabase";
 
@@ -12,6 +12,7 @@ export interface UserSession {
   position?: string;
   phone?: string;
   city?: string;
+  state?: string;
   account_type: 'buyer' | 'seller' | 'both';
   supplierId?: string;
   supplierRating?: number;
@@ -24,11 +25,25 @@ interface AuthContextProps {
   openAuthModal: () => void;
   closeAuthModal: () => void;
   signIn: (email: string, password: string) => Promise<boolean>;
-  registerUser: (name: string, email: string, password: string, company: string, role: string) => Promise<boolean>;
+  registerUser: (
+    name: string,
+    email: string,
+    password: string,
+    confirmPass: string,
+    company: string,
+    role: string,
+    phone: string,
+    city: string,
+    state: string
+  ) => Promise<boolean>;
   signOut: () => void;
   showToast: (msg: string) => void;
   loading: boolean;
-  updateProfile: (updatedData: { full_name: string; organization?: string; phone?: string; city?: string }) => Promise<boolean>;
+  updateProfile: (updatedData: { full_name: string; organization?: string; phone?: string; city?: string; state?: string }) => Promise<boolean>;
+  followedSupplierIds: string[];
+  followSupplier: (supplierId: string) => Promise<void>;
+  unfollowSupplier: (supplierId: string) => Promise<void>;
+  refreshFollows: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextProps | undefined>(undefined);
@@ -192,6 +207,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [followedSupplierIds, setFollowedSupplierIds] = useState<string[]>([]);
   
   // Modal states
   const [isRegisterMode, setIsRegisterMode] = useState(false);
@@ -204,7 +220,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [regName, setRegName] = useState("");
   const [regEmail, setRegEmail] = useState("");
   const [regPassword, setRegPassword] = useState("");
+  const [regConfirmPassword, setRegConfirmPassword] = useState("");
   const [regOrg, setRegOrg] = useState("");
+  const [regPhone, setRegPhone] = useState("");
+  const [regCity, setRegCity] = useState("");
+  const [regState, setRegState] = useState("");
   const [regType, setRegType] = useState("both");
 
   const [formError, setFormError] = useState<string | null>(null);
@@ -212,6 +232,124 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const at = (key: string): string => {
     const langDict = AUTH_TRANSLATIONS[language] || AUTH_TRANSLATIONS["English"];
     return langDict[key] || AUTH_TRANSLATIONS["English"][key] || key;
+  };
+
+  const repairProfile = async (
+    userId: string,
+    name: string,
+    email: string,
+    company: string,
+    role: string,
+    phone: string,
+    city: string,
+    state: string
+  ): Promise<any> => {
+    // 1. Fetch current user from DB to see if it exists
+    const { data: dbUser, error: fetchError } = await (supabase as any)
+      .from('users')
+      .select('*')
+      .eq('id', userId)
+      .maybeSingle();
+
+    if (fetchError) {
+      console.error("Error checking db user profile during repair:", fetchError);
+    }
+
+    const cityState = city && state ? `${city}, ${state}` : (city || 'Hyderabad, Telangana');
+
+    let userProfile = dbUser;
+    if (!userProfile) {
+      // Insert profile
+      const { data: insertedUser, error: insertError } = await (supabase as any)
+        .from('users')
+        .insert({
+          id: userId,
+          full_name: name,
+          email: email,
+          organization: company || null,
+          phone: phone || '',
+          account_type: role as 'buyer' | 'seller' | 'both',
+          city: cityState,
+        })
+        .select()
+        .maybeSingle();
+
+      if (insertError) {
+        // Handle race conditions where profile is created concurrently
+        const { data: retryUser } = await (supabase as any)
+          .from('users')
+          .select('*')
+          .eq('id', userId)
+          .maybeSingle();
+
+        if (retryUser) {
+          userProfile = retryUser;
+        } else {
+          console.error("Error creating user profile during repair:", insertError);
+          throw insertError;
+        }
+      } else {
+        userProfile = insertedUser;
+      }
+    }
+
+    // 2. Insert suppliers if role is seller or both
+    if (userProfile && (userProfile.account_type === 'seller' || userProfile.account_type === 'both')) {
+      const { data: supplier, error: supplierFetchError } = await (supabase as any)
+        .from('suppliers')
+        .select('*')
+        .eq('user_id', userId)
+        .maybeSingle();
+
+      if (supplierFetchError) {
+        console.error("Error checking supplier profile during repair:", supplierFetchError);
+      }
+
+      if (!supplier) {
+        const insertPayload: any = {
+          user_id: userId,
+          company_name: company || `${userProfile.full_name}'s Company`,
+          location: cityState,
+          verified: false,
+          rating: 5.0,
+          trust_score: 95.0,
+          contact_number: phone || '+91 90008 90009',
+          business_hours: '09:00 AM - 06:00 PM',
+          created_at: new Date().toISOString()
+        };
+
+        let { error: supplierError } = await (supabase as any)
+          .from('suppliers')
+          .insert(insertPayload);
+
+        // If insert fails due to missing created_at column (i.e. migration not run yet), retry without it
+        if (supplierError && (supplierError.message?.includes('created_at') || supplierError.code === '42703')) {
+          console.warn("Inserting supplier with created_at failed during repair, retrying without created_at column:", supplierError.message);
+          delete insertPayload.created_at;
+          
+          const retryResult = await (supabase as any)
+            .from('suppliers')
+            .insert(insertPayload);
+            
+          supplierError = retryResult.error;
+        }
+
+        if (supplierError) {
+          const { data: retrySupplier } = await (supabase as any)
+            .from('suppliers')
+            .select('*')
+            .eq('user_id', userId)
+            .maybeSingle();
+
+          if (!retrySupplier) {
+            console.error("Error creating supplier profile during repair:", supplierError);
+            throw supplierError;
+          }
+        }
+      }
+    }
+
+    return userProfile;
   };
 
   const fetchAndCacheUser = async (userId: string) => {
@@ -232,27 +370,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const { data: { user: authUser } } = await supabase.auth.getUser();
         if (authUser) {
           const email = authUser.email || "";
-          const name = email.split('@')[0] || 'User';
+          const metadata = authUser.user_metadata || {};
+          const fullName = metadata.full_name || email.split('@')[0] || 'User';
+          const organization = metadata.organization || null;
+          const accountType = metadata.account_type || 'both';
+          const phone = metadata.phone || '';
+          const city = metadata.city || '';
+          const state = metadata.state || '';
 
-          const { data: createdUser, error: insertError } = await (supabase as any)
-            .from('users')
-            .insert({
-              id: userId,
-              full_name: name,
-              email: email,
-              organization: null,
-              phone: '',
-              account_type: 'both',
-              city: 'Hyderabad, Telangana'
-            })
-            .select()
-            .single();
-
-          if (insertError) {
-            console.error("Error creating user profile:", insertError);
-            return;
-          }
-          userProfile = createdUser;
+          userProfile = await repairProfile(userId, fullName, email, organization, accountType, phone, city, state);
         }
       }
 
@@ -273,27 +399,38 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             rating = Number(supplier.rating);
             trustScore = Number(supplier.trust_score);
           } else {
-            const { data: createdSupplier, error: supplierError } = await (supabase as any)
-              .from('suppliers')
-              .insert({
-                user_id: userId,
-                company_name: `${userProfile.full_name}'s Company`,
-                location: 'Hyderabad, Telangana',
-                verified: false,
-                rating: 5.0,
-                trust_score: 95.0,
-                contact_number: '+91 90008 90009',
-                business_hours: '09:00 AM - 06:00 PM'
-              })
-              .select()
-              .single();
+            await repairProfile(
+              userId,
+              userProfile.full_name,
+              userProfile.email,
+              userProfile.organization || '',
+              userProfile.account_type,
+              userProfile.phone || '',
+              userProfile.city?.split(',')[0]?.trim() || '',
+              userProfile.city?.split(',')[1]?.trim() || ''
+            );
 
-            if (!supplierError && createdSupplier) {
-              supplierId = createdSupplier.id;
-              rating = Number(createdSupplier.rating);
-              trustScore = Number(createdSupplier.trust_score);
+            const { data: refetchedSupplier } = await (supabase as any)
+              .from('suppliers')
+              .select('*')
+              .eq('user_id', userId)
+              .maybeSingle();
+
+            if (refetchedSupplier) {
+              supplierId = refetchedSupplier.id;
+              rating = Number(refetchedSupplier.rating);
+              trustScore = Number(refetchedSupplier.trust_score);
             }
           }
+        }
+
+        let city = userProfile.city || "";
+        let parsedCity = city;
+        let parsedState = "";
+        if (city.includes(",")) {
+          const parts = city.split(",");
+          parsedCity = parts[0].trim();
+          parsedState = parts[1].trim();
         }
 
         let displayRole = "Buyer & Seller";
@@ -308,7 +445,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           company: userProfile.organization || undefined,
           position: userProfile.account_type === "buyer" ? "Procurement Specialist" : "Sales Representative",
           phone: userProfile.phone || undefined,
-          city: userProfile.city || undefined,
+          city: parsedCity || undefined,
+          state: parsedState || undefined,
           account_type: userProfile.account_type,
           supplierId,
           supplierRating: rating,
@@ -385,7 +523,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setRegName("");
     setRegEmail("");
     setRegPassword("");
+    setRegConfirmPassword("");
     setRegOrg("");
+    setRegPhone("");
+    setRegCity("");
+    setRegState("");
     setIsRegisterMode(false);
     setIsAuthModalOpen(true);
   };
@@ -430,66 +572,126 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const registerUser = async (name: string, inputEmail: string, inputPass: string, company: string, role: string): Promise<boolean> => {
-    if (!name || !inputEmail || !inputPass) {
-      setFormError(at("invalidCredentials"));
+  const registerUser = async (
+    name: string,
+    inputEmail: string,
+    inputPass: string,
+    confirmPass: string,
+    company: string,
+    role: string,
+    phone: string,
+    city: string,
+    state: string
+  ): Promise<boolean> => {
+    if (!name || !inputEmail || !inputPass || !confirmPass || !company || !role || !phone || !city || !state) {
+      setFormError("All fields are required.");
+      return false;
+    }
+    if (inputPass !== confirmPass) {
+      setFormError("Passwords do not match.");
       return false;
     }
     setFormError(null);
 
     try {
-      const { data, error } = await supabase.auth.signUp({
+      // 1. Check if user already exists in public.users (fully registered)
+      const { data: existingUser, error: checkError } = await (supabase as any)
+        .from('users')
+        .select('id')
+        .eq('email', inputEmail)
+        .maybeSingle();
+
+      if (checkError) {
+        console.error("Error checking for existing user profile:", checkError);
+      }
+
+      if (existingUser) {
+        setFormError("This email is already registered. Please Sign In.");
+        return false;
+      }
+
+      let userId: string;
+
+      // 2. Try to signUp with metadata options
+      const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
         email: inputEmail,
         password: inputPass,
+        options: {
+          data: {
+            full_name: name,
+            organization: company,
+            phone: phone,
+            city: city,
+            state: state,
+            account_type: role,
+          }
+        }
       });
 
-      if (error) throw error;
+      if (signUpError) {
+        // Check if error is because they already exist in auth.users (but not in public.users)
+        const isAlreadyRegistered = signUpError.message && (
+          signUpError.message.toLowerCase().includes("already registered") ||
+          signUpError.message.toLowerCase().includes("already exists") ||
+          signUpError.status === 400
+        );
 
-      if (!data.user) {
-        throw new Error("Registration failed. Please check credentials.");
-      }
-
-      const userId = data.user.id;
-
-      // Create users record in Supabase
-      const { error: userError } = await (supabase as any)
-        .from('users')
-        .insert({
-          id: userId,
-          full_name: name,
-          email: inputEmail,
-          organization: company || null,
-          phone: '',
-          account_type: role as 'buyer' | 'seller' | 'both',
-          city: 'Hyderabad, Telangana',
-        });
-
-      if (userError) throw userError;
-
-      // Create suppliers record if role is seller or both
-      if (role === 'seller' || role === 'both') {
-        const { error: supplierError } = await (supabase as any)
-          .from('suppliers')
-          .insert({
-            user_id: userId,
-            company_name: company || `${name}'s Company`,
-            location: 'Hyderabad, Telangana',
-            verified: false,
-            rating: 5.0,
-            trust_score: 95.0,
-            contact_number: '+91 90008 90009',
-            business_hours: '09:00 AM - 06:00 PM'
+        if (isAlreadyRegistered) {
+          // Attempt sign in to complete and repair registration
+          const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
+            email: inputEmail,
+            password: inputPass,
           });
 
-        if (supplierError) throw supplierError;
+          if (signInError) {
+            if (signInError.message.toLowerCase().includes("invalid login credentials")) {
+              setFormError("This email is already registered. Please Sign In.");
+            } else {
+              setFormError(signInError.message || "Authentication failed.");
+            }
+            return false;
+          }
+
+          if (!signInData.user) {
+            setFormError("Registration failed. Please check credentials.");
+            return false;
+          }
+
+          userId = signInData.user.id;
+
+          // Update user metadata to match new inputs
+          await supabase.auth.updateUser({
+            data: {
+              full_name: name,
+              organization: company,
+              phone: phone,
+              city: city,
+              state: state,
+              account_type: role,
+            }
+          });
+        } else {
+          setFormError(signUpError.message || "Registration failed.");
+          return false;
+        }
+      } else {
+        if (!signUpData.user) {
+          setFormError("Registration failed. Please check credentials.");
+          return false;
+        }
+        userId = signUpData.user.id;
       }
 
+      // 3. Re-create or verify database profiles
+      await repairProfile(userId, name, inputEmail, company, role, phone, city, state);
+
+      // 4. Update local session state and redirect
       await fetchAndCacheUser(userId);
       setIsAuthModalOpen(false);
       
       const welcomeMsg = at("welcomeNewUser").replace("{name}", name);
       setToastMessage(welcomeMsg);
-      window.location.href = "/";
+      window.location.href = "/home";
       return true;
     } catch (err: any) {
       console.error("Registration error:", err);
@@ -498,9 +700,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const updateProfile = async (updatedData: { full_name: string; organization?: string; phone?: string; city?: string }): Promise<boolean> => {
+  const updateProfile = async (updatedData: { full_name: string; organization?: string; phone?: string; city?: string; state?: string }): Promise<boolean> => {
     if (!user) return false;
     try {
+      const cityState = updatedData.city && updatedData.state ? `${updatedData.city}, ${updatedData.state}` : (updatedData.city || "");
       // Update public.users table
       const { error: userError } = await (supabase as any)
         .from('users')
@@ -508,7 +711,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           full_name: updatedData.full_name,
           organization: updatedData.organization || null,
           phone: updatedData.phone || null,
-          city: updatedData.city || null
+          city: cityState || null
         })
         .eq('id', user.id);
 
@@ -520,7 +723,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           .from('suppliers')
           .update({
             company_name: updatedData.organization || 'Enterprise Partner',
-            location: updatedData.city || 'Hyderabad, Telangana'
+            location: cityState || 'Hyderabad, Telangana'
           })
           .eq('id', user.supplierId);
 
@@ -547,15 +750,113 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setUser(null);
       localStorage.removeItem("supply_market_session");
       setToastMessage(at("signOutSuccess"));
+      window.location.href = "/home";
     }
   };
+
+  const refreshFollows = async () => {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const currentUserId = session?.user?.id;
+      if (!currentUserId) {
+        setFollowedSupplierIds([]);
+        return;
+      }
+      const { data, error } = await (supabase as any)
+        .from('buyer_follows')
+        .select('supplier_id')
+        .eq('buyer_id', currentUserId);
+      
+      if (error) {
+        console.error("Error loading follows from Supabase:", error);
+        return;
+      }
+      const ids = (data || []).map((row: any) => row.supplier_id);
+      setFollowedSupplierIds(ids);
+    } catch (err) {
+      console.error("Error refreshing follows:", err);
+    }
+  };
+
+  const followSupplier = async (supplierId: string) => {
+    const { data: { session } } = await supabase.auth.getSession();
+    const currentUserId = session?.user?.id;
+    if (!currentUserId) {
+      showToast("Please sign in to follow suppliers.");
+      openAuthModal();
+      return;
+    }
+
+    console.log("Follow clicked", supplierId);
+
+    // Prevent duplicate clicks/inserts
+    if (followedSupplierIds.includes(supplierId)) {
+      console.log("Supplier already followed, ignoring duplicate follow click:", supplierId);
+      return;
+    }
+
+    try {
+      const { error } = await (supabase as any)
+        .from('buyer_follows')
+        .insert({
+          buyer_id: currentUserId,
+          supplier_id: supplierId,
+          created_at: new Date().toISOString()
+        });
+
+      if (error) {
+        console.error("Supabase insert follow failed:", error.code, error.message, error.details);
+        showToast(`Error following supplier: ${error.message}`);
+        return;
+      }
+
+      setFollowedSupplierIds(prev => {
+        if (prev.includes(supplierId)) return prev;
+        return [...prev, supplierId];
+      });
+      showToast("Supplier added to Hotline Connections.");
+    } catch (err) {
+      console.error("Error in followSupplier:", err);
+    }
+  };
+
+  const unfollowSupplier = async (supplierId: string) => {
+    const { data: { session } } = await supabase.auth.getSession();
+    const currentUserId = session?.user?.id;
+    if (!currentUserId) return;
+
+    console.log("Unfollow clicked", supplierId);
+
+    try {
+      const { error } = await (supabase as any)
+        .from('buyer_follows')
+        .delete()
+        .eq('buyer_id', currentUserId)
+        .eq('supplier_id', supplierId);
+
+      if (error) {
+        console.error("Supabase delete follow failed:", error.code, error.message, error.details);
+        showToast(`Error removing follow: ${error.message}`);
+        return;
+      }
+
+      setFollowedSupplierIds(prev => prev.filter(id => id !== supplierId));
+      showToast("Supplier removed from Hotline Connections.");
+    } catch (err) {
+      console.error("Error in unfollowSupplier:", err);
+    }
+  };
+
+  useEffect(() => {
+    refreshFollows();
+  }, [user?.id]);
 
   const handleFormSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError(null);
 
     if (isRegisterMode) {
-      await registerUser(regName, regEmail, regPassword, regOrg, regType);
+      await registerUser(regName, regEmail, regPassword, regConfirmPassword, regOrg, regType, regPhone, regCity, regState);
     } else {
       await signIn(email, password);
     }
@@ -578,7 +879,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         signOut,
         showToast,
         loading,
-        updateProfile
+        updateProfile,
+        followedSupplierIds,
+        followSupplier,
+        unfollowSupplier,
+        refreshFollows
       }}
     >
       {children}
@@ -636,7 +941,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
               {isRegisterMode ? (
                 /* Registration View */
-                <div className="space-y-3.5">
+                <div className="space-y-3.5 max-h-[360px] overflow-y-auto pr-1">
                   <div className="space-y-1">
                     <label className="text-[10px] font-bold text-app-text-secondary uppercase flex items-center gap-1.5">
                       <User className="h-3.5 w-3.5 text-primary" />
@@ -669,16 +974,63 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
                   <div className="space-y-1">
                     <label className="text-[10px] font-bold text-app-text-secondary uppercase flex items-center gap-1.5">
+                      <Phone className="h-3.5 w-3.5 text-primary" />
+                      <span>Mobile Number</span>
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="+91 90008 90009"
+                      value={regPhone}
+                      onChange={(e) => setRegPhone(e.target.value)}
+                      className="w-full rounded-xl border border-app-border bg-app-bg px-3.5 py-2.5 text-app-text focus:border-primary outline-none"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-app-text-secondary uppercase flex items-center gap-1.5">
                       <Building className="h-3.5 w-3.5 text-primary" />
                       <span>{at("orgName")}</span>
                     </label>
                     <input
                       type="text"
+                      required
                       placeholder="IndoCorp Agro Food Products"
                       value={regOrg}
                       onChange={(e) => setRegOrg(e.target.value)}
                       className="w-full rounded-xl border border-app-border bg-app-bg px-3.5 py-2.5 text-app-text focus:border-primary outline-none"
                     />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-app-text-secondary uppercase flex items-center gap-1.5">
+                        <MapPin className="h-3.5 w-3.5 text-primary" />
+                        <span>City</span>
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="Vijayawada"
+                        value={regCity}
+                        onChange={(e) => setRegCity(e.target.value)}
+                        className="w-full rounded-xl border border-app-border bg-app-bg px-3.5 py-2.5 text-app-text focus:border-primary outline-none"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-app-text-secondary uppercase flex items-center gap-1.5">
+                        <MapPin className="h-3.5 w-3.5 text-primary" />
+                        <span>State</span>
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="Andhra Pradesh"
+                        value={regState}
+                        onChange={(e) => setRegState(e.target.value)}
+                        className="w-full rounded-xl border border-app-border bg-app-bg px-3.5 py-2.5 text-app-text focus:border-primary outline-none"
+                      />
+                    </div>
                   </div>
 
                   <div className="space-y-1">
@@ -717,6 +1069,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                       >
                         {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                       </button>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-app-text-secondary uppercase flex items-center gap-1.5">
+                      <Lock className="h-3.5 w-3.5 text-primary" />
+                      <span>Confirm Password</span>
+                    </label>
+                    <div className="relative">
+                      <input
+                        type={showPassword ? "text" : "password"}
+                        required
+                        value={regConfirmPassword}
+                        onChange={(e) => setRegConfirmPassword(e.target.value)}
+                        className="w-full rounded-xl border border-app-border bg-app-bg pl-3.5 pr-10 py-2.5 text-app-text focus:border-primary outline-none"
+                      />
                     </div>
                   </div>
                 </div>
@@ -768,7 +1136,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                         type="checkbox"
                         checked={rememberMe}
                         onChange={(e) => setRememberMe(e.target.checked)}
-                        className="rounded text-primary border-app-border focus:ring-primary h-3.5 w-3.5 cursor-pointer bg-app-bg"
+                        className="rounded text-primary border-app-border focus:ring-primary h-3.5 w-3.5 bg-app-bg cursor-pointer"
                       />
                       <span className="font-semibold">{at("rememberMe")}</span>
                     </label>

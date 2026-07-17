@@ -15,13 +15,16 @@ import {
   MessageSquare
 } from "lucide-react";
 import type { MatchResult } from "../services/geminiService";
-import { matchSuppliersAI, getSupabaseProducts, getSupabaseSuppliers } from "../services/geminiService";
+import { matchSuppliersAI, discussSourcingSession, getSupabaseSuppliers } from "../services/geminiService";
 import { speakText, stopSpeaking, getSpeechRecognition } from "../services/speechService";
 import type { Supplier } from "../services/supplierData";
-import { getStoredSuppliers } from "../services/supplierData";
 import { useLanguage } from "../context/LanguageContext";
 import { useAuth } from "../hooks/useAuth";
 import { supabase } from "../services/supabase";
+import { sendSupplierNotification } from "../services/notificationService";
+import { ConversationalAssistant } from "../components/ConversationalAssistant";
+import { AICallExperience } from "../components/AICallExperience";
+
 
 const AI_STEPS = [
   "Understanding your requirement",
@@ -47,23 +50,24 @@ const SUGGESTED_QUERIES: Record<string, string> = {
 
 export const BuyerPage: React.FC = () => {
   const { language, t } = useLanguage();
-  const { user } = useAuth();
+  const { user, followedSupplierIds, followSupplier } = useAuth();
   const [query, setQuery] = useState("");
   const [isSearching, setIsSearching] = useState(false);
   const [currentStep, setCurrentStep] = useState(0);
   const [searchResult, setSearchResult] = useState<MatchResult | null>(null);
-  const [allProducts, setAllProducts] = useState<any[]>([]);
+  const [allSuppliers, setAllSuppliers] = useState<Supplier[]>([]);
+  const [selectedSupplierForModal, setSelectedSupplierForModal] = useState<Supplier | null>(null);
 
   useEffect(() => {
-    const loadProducts = async () => {
+    const loadData = async () => {
       try {
-        const prods = await getSupabaseProducts();
-        setAllProducts(prods);
+        const sups = await getSupabaseSuppliers();
+        setAllSuppliers(sups);
       } catch (err) {
-        console.error("Error loading products for browse list:", err);
+        console.error("Error loading suppliers for browse list:", err);
       }
     };
-    loadProducts();
+    loadData();
   }, [searchResult]);
 
   // Voice Assistant state (Centered modal)
@@ -78,10 +82,21 @@ export const BuyerPage: React.FC = () => {
   // Connect Overlay states
   const [connectState, setConnectState] = useState<"idle" | "connecting" | "connected">("idle");
   const [connectedSupplier, setConnectedSupplier] = useState<Supplier | null>(null);
+  const [showSupplierCards, setShowSupplierCards] = useState(false);
+
+  // Device detection
+  const [isMobile, setIsMobile] = useState(false);
+  useEffect(() => {
+    const checkDevice = () => {
+      setIsMobile(window.innerWidth < 1024);
+    };
+    checkDevice();
+    window.addEventListener("resize", checkDevice);
+    return () => window.removeEventListener("resize", checkDevice);
+  }, []);
 
   // Saved suppliers IDs list
   const [savedIds, setSavedIds] = useState<string[]>([]);
-  const [followedIds, setFollowedIds] = useState<string[]>([]);
 
   // Manual browse / database search states
   const [manualSearch, setManualSearch] = useState("");
@@ -91,10 +106,24 @@ export const BuyerPage: React.FC = () => {
   const [maxPrice, setMaxPrice] = useState("");
   const [minRating, setMinRating] = useState("0");
   const [onlyAvailableToday, setOnlyAvailableToday] = useState(false);
-  const [voiceError, setVoiceError] = useState("");
+  const [, setVoiceError] = useState("");
   const subtitleContainerRef = React.useRef<HTMLDivElement>(null);
 
   const speechHook = getSpeechRecognition();
+
+  const [sessionId, setSessionId] = useState<string>("");
+  const [conversationLog, setConversationLog] = useState<Array<{ role: "user" | "assistant"; text: string }>>([]);
+
+  // Procurement Assistant states
+  const [isMuted, setIsMuted] = useState(false);
+  const [isMinimised, setIsMinimised] = useState(false);
+  const [isAssistantThinking, setIsAssistantThinking] = useState(false);
+  const [isAssistantSpeaking, setIsAssistantSpeaking] = useState(false);
+  const [assistantSpeechText, setAssistantSpeechText] = useState("");
+  const [assistantVoiceListening, setAssistantVoiceListening] = useState(false);
+  const [assistantInputText, setAssistantInputText] = useState("");
+  const [buyerSpeechLive, setBuyerSpeechLive] = useState("");
+
 
   // Scroll lock effect on center assistant modal
   useEffect(() => {
@@ -107,6 +136,9 @@ export const BuyerPage: React.FC = () => {
       document.body.style.overflow = "";
     };
   }, [isVoiceOpen]);
+
+
+
 
   // Subtitle auto-scroll effect
   useEffect(() => {
@@ -165,6 +197,7 @@ export const BuyerPage: React.FC = () => {
     setConnectState("idle");
     stopSpeaking();
     setIsVoiceOpen(false);
+    setShowSupplierCards(false);
 
     // Sequential 6-step progress stepper updates every 400ms
     const stepInterval = setInterval(() => {
@@ -204,20 +237,25 @@ export const BuyerPage: React.FC = () => {
       clearInterval(stepInterval);
       
       // 3. Save AI recommendation in Supabase if a valid supplier is matched
-      if (requestId && results.bestSupplier && results.bestSupplier.id !== 'mock_assistant' && results.bestSupplier.id !== 'mock_no_match') {
+      if (results.bestSupplier && results.bestSupplier.id !== 'mock_assistant' && results.bestSupplier.id !== 'mock_no_match') {
         const bestMatchScore = results.allMatches.find(m => m.supplier.id === results.bestSupplier.id)?.score || 95;
-        const { error: recomError } = await (supabase as any)
-          .from('airecommendations')
-          .insert({
-            request_id: requestId,
-            supplier_id: results.bestSupplier.id,
-            confidence_score: Number((bestMatchScore > 100 ? 100 : bestMatchScore < 0 ? 0 : bestMatchScore).toFixed(2))
-          });
+        const cappedScore = bestMatchScore > 100 ? 100 : (bestMatchScore < 0 ? 0 : bestMatchScore);
 
-        if (recomError) {
-          console.error("Error inserting AI recommendation:", recomError);
+        if (requestId) {
+          const { error: recomError } = await (supabase as any)
+            .from('airecommendations')
+            .insert({
+              request_id: requestId,
+              supplier_id: results.bestSupplier.id,
+              confidence_score: Number(cappedScore.toFixed(2))
+            });
+
+          if (recomError) {
+            console.error("Error inserting AI recommendation:", recomError);
+          }
         }
       }
+
 
       setCurrentStep(AI_STEPS.length - 1);
       setTimeout(() => {
@@ -236,10 +274,36 @@ export const BuyerPage: React.FC = () => {
 
   // Trigger Center assistant dialog
   const triggerVoiceAssistant = (results: MatchResult) => {
+    // Trigger match notification for the seller
+    if (results.bestSupplier) {
+      sendSupplierNotification(results.bestSupplier.id, results.aiSummary.requirement);
+    }
+
     setIsVoiceOpen(true);
-    setIsSpeaking(true);
     setSpokenCharIndex(0);
     setVoiceError("");
+    setIsMinimised(false);
+    setAssistantSpeechText(results.voiceTranscript);
+
+    // Initialize conversation history and broadcast current call status to Seller Workspace
+    const activeSessionId = sessionId || `sess_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`;
+    if (!sessionId) {
+      setSessionId(activeSessionId);
+    }
+
+    const initialMsg = { role: "assistant" as const, text: results.voiceTranscript };
+    const initialHistory = [initialMsg];
+    setConversationLog(initialHistory);
+
+    // If mobile, we do NOT run text-to-speech synthesis immediately (incoming call ring state triggers first)
+    if (window.innerWidth < 1024) {
+      setIsSpeaking(false);
+      setIsAssistantSpeaking(false);
+      return;
+    }
+
+    setIsSpeaking(true);
+    setIsAssistantSpeaking(true);
 
     speakText({
       text: results.voiceTranscript,
@@ -249,72 +313,351 @@ export const BuyerPage: React.FC = () => {
       },
       onEnd: () => {
         setIsSpeaking(false);
+        setIsAssistantSpeaking(false);
+
+        // Start desktop continuous conversation if unmuted
+        if (!isMuted && !isMinimised) {
+          startAssistantContinuousSpeech();
+        }
       },
       onError: (err: any) => {
         setIsSpeaking(false);
+        setIsAssistantSpeaking(false);
         setVoiceError(typeof err === "string" ? err : "Unable to generate AI voice.");
+        if (!isMuted && !isMinimised) {
+          startAssistantContinuousSpeech();
+        }
       }
     });
   };
+
+  const startAssistantContinuousSpeech = () => {
+    if (!isVoiceOpen || isMuted || isSpeaking || isAssistantThinking || isAssistantSpeaking || isMinimised) return;
+
+    setAssistantVoiceListening(true);
+    setVoiceError("");
+    setBuyerSpeechLive("");
+
+    speechHook.start(
+      language,
+      (result) => {
+        setBuyerSpeechLive("");
+        handleAssistantSend(result);
+      },
+      () => {
+        setAssistantVoiceListening(false);
+        setBuyerSpeechLive("");
+        // Automatically cycle back to listen continuously
+        setTimeout(() => {
+          if (isVoiceOpen && !isMuted && !isSpeaking && !isAssistantThinking && !isAssistantSpeaking && !isMinimised) {
+            startAssistantContinuousSpeech();
+          }
+        }, 600);
+      },
+      (err) => {
+        setAssistantVoiceListening(false);
+        setBuyerSpeechLive("");
+        console.warn("Continuous browser speech recognition error:", err);
+      },
+      (interimResult) => {
+        setBuyerSpeechLive(interimResult);
+      }
+    );
+  };
+
+  const startAssistantSpeaking = async (text: string) => {
+    if (isMuted) return;
+
+    setIsSpeaking(true);
+    setIsAssistantSpeaking(true);
+    setSpokenCharIndex(0);
+    setAssistantSpeechText(text);
+
+    // Turn off listening during speaking
+    speechHook.stop();
+    setAssistantVoiceListening(false);
+
+    speakText({
+      text,
+      lang: language,
+      onBoundary: (charIndex) => {
+        setSpokenCharIndex(charIndex);
+      },
+      onEnd: () => {
+        setIsSpeaking(false);
+        setIsAssistantSpeaking(false);
+        if (!isMuted && isVoiceOpen && !isMinimised) {
+          startAssistantContinuousSpeech();
+        }
+      },
+      onError: (err: any) => {
+        setIsSpeaking(false);
+        setIsAssistantSpeaking(false);
+        setVoiceError(typeof err === "string" ? err : "Unable to play audio.");
+        if (!isMuted && isVoiceOpen && !isMinimised) {
+          startAssistantContinuousSpeech();
+        }
+      }
+    });
+  };
+
+  const handleAssistantSend = async (inputText: string) => {
+    if (!inputText.trim() || !searchResult) return;
+
+    // Halt speech synthesizer and listener
+    stopSpeaking();
+    setIsSpeaking(false);
+    setIsAssistantSpeaking(false);
+    speechHook.stop();
+    setAssistantVoiceListening(false);
+
+    const userMessage = { role: "user" as const, text: inputText };
+    const updatedHistory = [...conversationLog, userMessage];
+    setConversationLog(updatedHistory);
+    setAssistantInputText("");
+
+    // Intercept transitions
+    const textLower = inputText.toLowerCase().trim();
+    const isConnectIntent = textLower.includes("connect") || textLower.includes("let's go") || textLower.includes("lets go");
+    const isShowIntent = 
+      textLower.includes("show suppliers") || 
+      textLower.includes("show supplier") || 
+      textLower.includes("i'm ready") || 
+      textLower.includes("im ready") || 
+      textLower.includes("i am ready") || 
+      textLower.includes("let's proceed") || 
+      textLower.includes("lets proceed") || 
+      textLower.includes("continue") ||
+      textLower.includes("show matching suppliers") ||
+      textLower.includes("view suppliers") ||
+      textLower.includes("proceed");
+
+    if (isConnectIntent || isShowIntent) {
+      const gracefulFinishText = `Great. Based on everything we've discussed, I recommend ${searchResult.bestSupplier.businessName}. I'll now ${isConnectIntent ? 'connect you' : 'show the matching suppliers'}.`;
+      
+      const assistantMessage = { role: "assistant" as const, text: gracefulFinishText };
+      const nextHistory = [...updatedHistory, assistantMessage];
+      setConversationLog(nextHistory);
+
+      const performTransition = () => {
+        setIsVoiceOpen(false);
+        setShowSupplierCards(true);
+        if (isConnectIntent) {
+          handleConnectSupplier(searchResult.bestSupplier);
+        }
+      };
+
+      if (isMuted) {
+        performTransition();
+      } else {
+        setIsSpeaking(true);
+        setIsAssistantSpeaking(true);
+        setSpokenCharIndex(0);
+        setAssistantSpeechText(gracefulFinishText);
+
+        speakText({
+          text: gracefulFinishText,
+          lang: language,
+          onBoundary: (charIndex) => {
+            setSpokenCharIndex(charIndex);
+          },
+          onEnd: () => {
+            setIsSpeaking(false);
+            setIsAssistantSpeaking(false);
+            performTransition();
+          },
+          onError: () => {
+            setIsSpeaking(false);
+            setIsAssistantSpeaking(false);
+            performTransition();
+          }
+        });
+      }
+      return;
+    }
+
+    setIsAssistantThinking(true);
+
+
+
+    try {
+      const matchedSuppliersList = searchResult.allMatches.map(m => m.supplier);
+
+      const reply = await discussSourcingSession(
+        inputText,
+        language,
+        searchResult.aiSummary.requirement,
+        matchedSuppliersList,
+        searchResult.allMatches,
+        updatedHistory
+      );
+
+      const assistantMessage = { role: "assistant" as const, text: reply };
+      const nextHistory = [...updatedHistory, assistantMessage];
+      setConversationLog(nextHistory);
+      setIsAssistantThinking(false);
+
+      startAssistantSpeaking(reply);
+    } catch (err) {
+      setIsAssistantThinking(false);
+      console.error("Gemini discussion error:", err);
+      
+      const professionalMsg = "I apologize, but my conversational system is currently experiencing high load. You can proceed directly to view the matching suppliers by clicking 'Show Supplier Cards' below.";
+      const errHistory = [...updatedHistory, { role: "assistant" as const, text: professionalMsg }];
+      setConversationLog(errHistory);
+
+      startAssistantSpeaking(professionalMsg);
+    }
+  };
+
 
   const handleCloseVoice = () => {
     stopSpeaking();
     setIsSpeaking(false);
+    setIsAssistantSpeaking(false);
+    setIsAssistantThinking(false);
+    setAssistantVoiceListening(false);
+    speechHook.stop();
     setIsVoiceOpen(false);
+    setConversationLog([]);
+    setSessionId("");
   };
 
   // Hotline Handshake connecting overlay
-  const handleConnectSupplier = (supplier: Supplier) => {
+  const handleConnectSupplier = async (supplier: Supplier) => {
+    // 1. Get authenticated buyer
+    const { data: { session } } = await supabase.auth.getSession();
+    const currentUserId = session?.user?.id;
+    if (!currentUserId) {
+      alert("Please sign in to connect with suppliers.");
+      return;
+    }
+
     setConnectedSupplier(supplier);
     setConnectState("connecting");
 
-    setTimeout(() => {
-      setConnectState("connected");
-      // Add to connected list inside connection array
-      const stored = getStoredSuppliers();
-      const updated = stored.map(s => {
-        if (s.businessName === supplier.businessName) {
-          return { ...s, status: "Connected" };
+    const buyerMsg = { role: "user" as const, text: "I want to connect with this supplier." };
+    const assistMsg = { role: "assistant" as const, text: `Connecting you now with ${supplier.businessName}.` };
+    const updatedHistory = [...conversationLog, buyerMsg, assistMsg];
+    setConversationLog(updatedHistory);
+
+    const activeSessionId = sessionId || `sess_${Date.now()}`;
+    if (!sessionId) {
+      setSessionId(activeSessionId);
+    }
+
+    // Determine product ID
+    let prodId: string | null = null;
+    if (searchResult && searchResult.bestSupplier.id === supplier.id && searchResult.bestProduct) {
+      prodId = searchResult.bestProduct.id;
+    } else if (supplier.products && supplier.products.length > 0) {
+      prodId = supplier.products[0].id;
+    }
+
+    try {
+      // 2. Insert into buyer_connections
+      const { error } = await (supabase as any)
+        .from('buyer_connections')
+        .insert({
+          buyer_id: currentUserId,
+          supplier_id: supplier.id,
+          product_id: prodId,
+          status: 'Active',
+          created_at: new Date().toISOString()
+        });
+
+      if (error) {
+        // If unique constraint violation, ignore (already connected)
+        if (error.code === '23505') {
+          console.log("Connection already exists between buyer and supplier:", supplier.id);
+        } else {
+          console.error("Supabase insert connection failed:", error.code, error.message, error.details);
+          alert(`Error establishing connection: ${error.message}`);
+          setConnectState("idle");
+          return;
         }
-        return s;
-      });
-      localStorage.setItem("supply_market_suppliers", JSON.stringify(updated));
-    }, 2000);
+      }
+
+      setTimeout(() => {
+        setConnectState("connected");
+      }, 2000);
+    } catch (err) {
+      console.error("Error establishing connection:", err);
+      setConnectState("idle");
+    }
   };
 
-  // Follow suppliers helper
-  const handleFollowSupplier = (supplierName: string) => {
-    setFollowedIds(prev => {
-      const exists = prev.includes(supplierName);
-      if (exists) {
-        return prev.filter(name => name !== supplierName);
-      }
-      return [...prev, supplierName];
-    });
-  };
+
+  // Follow suppliers helper removed, using context instead
 
   // manual browse table loaded dynamically from state
   
-  const filteredProducts = allProducts.filter(prod => {
-    const matchesSearch = 
-      prod.name.toLowerCase().includes(manualSearch.toLowerCase()) || 
-      prod.description.toLowerCase().includes(manualSearch.toLowerCase()) ||
-      prod.businessName.toLowerCase().includes(manualSearch.toLowerCase());
+  const alternativeMatchesGrouped = React.useMemo(() => {
+    if (!searchResult || !searchResult.allMatches) return [];
     
-    const matchesCategory = selectedCategory === "" || prod.category === selectedCategory;
-    const matchesLocation = selectedLocation === "" || prod.location.toLowerCase().includes(selectedLocation.toLowerCase());
-    const matchesMinPrice = minPrice === "" || prod.price >= Number(minPrice);
-    const matchesMaxPrice = maxPrice === "" || prod.price <= Number(maxPrice);
-    const matchesRating = minRating === "0" || (prod as any).rating >= Number(minRating);
-    const matchesAvailability = !onlyAvailableToday || prod.availability === "Immediate";
+    const bestSupplierId = searchResult.bestSupplier.id;
+    const groups: Record<string, typeof searchResult.allMatches[0]> = {};
+    
+    searchResult.allMatches.forEach(match => {
+      const supplierId = match.supplier.id;
+      if (supplierId === bestSupplierId) return; // skip best match
+      
+      if (!groups[supplierId] || match.score > groups[supplierId].score) {
+        groups[supplierId] = match;
+      }
+    });
+    
+    return Object.values(groups).sort((a, b) => b.score - a.score);
+  }, [searchResult]);
 
-    return matchesSearch && matchesCategory && matchesLocation && matchesMinPrice && matchesMaxPrice && matchesRating && matchesAvailability;
-  });
+  const filteredSuppliers = React.useMemo(() => {
+    return allSuppliers.filter(sup => {
+      const matchesSearch = 
+        sup.businessName.toLowerCase().includes(manualSearch.toLowerCase()) ||
+        sup.products.some(p => 
+          p.name.toLowerCase().includes(manualSearch.toLowerCase()) || 
+          p.description.toLowerCase().includes(manualSearch.toLowerCase())
+        );
+      
+      const matchesCategory = selectedCategory === "" || sup.products.some(p => p.category === selectedCategory);
+      const matchesLocation = selectedLocation === "" || sup.location.toLowerCase().includes(selectedLocation.toLowerCase());
+      const matchesRating = minRating === "0" || sup.rating >= Number(minRating);
+      
+      const matchesPrice = sup.products.some(p => {
+        const matchesMinPrice = minPrice === "" || p.price >= Number(minPrice);
+        const matchesMaxPrice = maxPrice === "" || p.price <= Number(maxPrice);
+        const matchesCategorySpecific = selectedCategory === "" || p.category === selectedCategory;
+        return matchesMinPrice && matchesMaxPrice && matchesCategorySpecific;
+      });
+      
+      const matchesAvailability = !onlyAvailableToday || sup.products.some(p => p.availability === "Immediate");
+
+      return matchesSearch && matchesCategory && matchesLocation && matchesRating && matchesPrice && matchesAvailability;
+    }).map(sup => {
+      const matchedProds = sup.products.filter(p => {
+        const matchesSearch = 
+          p.name.toLowerCase().includes(manualSearch.toLowerCase()) || 
+          p.description.toLowerCase().includes(manualSearch.toLowerCase()) ||
+          sup.businessName.toLowerCase().includes(manualSearch.toLowerCase());
+        const matchesCategory = selectedCategory === "" || p.category === selectedCategory;
+        const matchesMinPrice = minPrice === "" || p.price >= Number(minPrice);
+        const matchesMaxPrice = maxPrice === "" || p.price <= Number(maxPrice);
+        const matchesAvailability = !onlyAvailableToday || p.availability === "Immediate";
+        
+        return matchesSearch && matchesCategory && matchesMinPrice && matchesMaxPrice && matchesAvailability;
+      });
+      
+      return {
+        ...sup,
+        matchedProducts: matchedProds.length > 0 ? matchedProds : sup.products
+      };
+    });
+  }, [allSuppliers, manualSearch, selectedCategory, selectedLocation, minPrice, maxPrice, minRating, onlyAvailableToday]);
 
   // Render ChatGPT styled Word Highlights
   const renderHighlightedTranscript = () => {
     if (!searchResult) return null;
-    const text = searchResult.voiceTranscript;
+    const text = assistantSpeechText || searchResult.voiceTranscript;
     const words = text.split(" ");
     let charAccumulator = 0;
 
@@ -348,6 +691,7 @@ export const BuyerPage: React.FC = () => {
       </div>
     );
   };
+
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8 bg-app-bg min-h-[calc(100vh-4rem)] transition-colors duration-300">
@@ -505,7 +849,35 @@ export const BuyerPage: React.FC = () => {
 
         {/* AI Recommendations Best Match Cards */}
         {searchResult && !isSearching && (
-          <div className="space-y-8 animate-fade-in-up">
+          showSupplierCards ? (
+            <div className="space-y-8 animate-fade-in-up">
+              
+              {/* AI Assistant Reopen Banner */}
+              <div className="rounded-2xl border border-primary/20 bg-gradient-to-r from-primary/5 to-secondary/5 p-4.5 flex flex-col sm:flex-row justify-between items-center gap-4.5">
+                <div className="flex items-center gap-3">
+                  <div className="h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center text-primary flex-shrink-0 animate-pulse">
+                    <Bot className="h-5 w-5" />
+                  </div>
+                  <div className="text-left">
+                    <h4 className="font-bold text-sm text-app-text">Need help evaluating these suppliers?</h4>
+                    <p className="text-xs text-app-text-secondary">Ask the AI Procurement Assistant to compare pricing, check stock levels, or draft negotiations.</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsVoiceOpen(true);
+                    setIsMinimised(false);
+                    if (!isMuted) {
+                      startAssistantContinuousSpeech();
+                    }
+                  }}
+                  className="flex items-center gap-2 rounded-xl bg-primary hover:opacity-90 text-white px-4 py-2.5 text-xs font-bold shadow cursor-pointer transition-all shrink-0"
+                >
+                  <MessageSquare className="h-4 w-4" />
+                  <span>Discuss Sourcing Session</span>
+                </button>
+              </div>
             
             {/* Top Match Hero Block */}
             <div>
@@ -569,7 +941,7 @@ export const BuyerPage: React.FC = () => {
                         <span>Connect</span>
                       </button>
                       <button
-                        onClick={() => alert(`Product details: \n${searchResult.bestProduct.description}`)}
+                        onClick={() => setSelectedSupplierForModal(searchResult.bestSupplier)}
                         className="rounded-xl border border-app-border bg-app-card hover:bg-app-card-hover text-app-text py-2 px-4 text-xs font-bold cursor-pointer"
                       >
                         View Details
@@ -637,11 +1009,11 @@ export const BuyerPage: React.FC = () => {
             </div>
 
             {/* Alternative matches */}
-            {searchResult.allMatches.length > 1 && (
+            {alternativeMatchesGrouped.length > 0 && (
               <div>
-                <h4 className="text-sm font-bold text-app-text-secondary uppercase tracking-wider mb-3">Other Sourced Options</h4>
+                <h4 className="text-sm font-bold text-app-text-secondary uppercase tracking-wider mb-3">Other Sourced Options (Grouped by Supplier)</h4>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  {searchResult.allMatches.slice(1, 3).map((match, idx) => (
+                  {alternativeMatchesGrouped.slice(0, 2).map((match, idx) => (
                     <div key={idx} className="border border-app-border rounded-xl p-4 bg-app-card flex justify-between items-center gap-4">
                       <div>
                         <strong className="text-sm font-bold text-app-text block">{match.supplier.businessName}</strong>
@@ -651,19 +1023,53 @@ export const BuyerPage: React.FC = () => {
                           <span className="text-app-text-secondary flex items-center gap-0.5"><Star className="h-3.5 w-3.5 fill-amber-400 text-amber-400" /> {match.supplier.rating}</span>
                         </div>
                       </div>
-                      <button
-                        onClick={() => handleConnectSupplier(match.supplier)}
-                        className="rounded-lg bg-primary text-white py-1.5 px-3 text-xs font-bold hover:opacity-90 cursor-pointer"
-                      >
-                        Connect
-                      </button>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => setSelectedSupplierForModal(match.supplier)}
+                          className="rounded-lg border border-app-border bg-app-card hover:bg-app-card-hover text-app-text py-1.5 px-3 text-xs font-semibold cursor-pointer"
+                        >
+                          View
+                        </button>
+                        <button
+                          onClick={() => handleConnectSupplier(match.supplier)}
+                          className="rounded-lg bg-primary text-white py-1.5 px-3 text-xs font-bold hover:opacity-90 cursor-pointer"
+                        >
+                          Connect
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>
               </div>
             )}
 
-          </div>
+            </div>
+          ) : (
+            /* Glassmorphic Placeholder while AI is explaining */
+            <div className="rounded-2xl border border-white/20 dark:border-slate-800/80 bg-white/50 dark:bg-slate-900/50 p-8 shadow-premium text-center space-y-5 backdrop-blur-md animate-fade-in-up">
+              <div className="h-14 w-14 rounded-2xl bg-primary/10 text-primary flex items-center justify-center mx-auto animate-pulse">
+                <Bot className="h-7 w-7" />
+              </div>
+              <div className="space-y-2 max-w-md mx-auto">
+                <h3 className="text-lg font-bold text-app-text">Evaluating Sourcing Recommendations</h3>
+                <p className="text-xs text-app-text-secondary">
+                  The Conversational AI Procurement Assistant is explaining the best supplier matching results. You can discuss pricing, proximity, and delivery constraints.
+                </p>
+              </div>
+              <div className="pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowSupplierCards(true);
+                    setIsVoiceOpen(false);
+                  }}
+                  className="rounded-xl border border-app-border bg-app-card hover:bg-app-card-hover text-app-text px-5 py-2.5 text-xs font-bold transition-all shadow-sm cursor-pointer"
+                >
+                  Show Supplier Cards
+                </button>
+              </div>
+            </div>
+          )
         )}
 
         {/* Manual Browse suppliers directory */}
@@ -774,82 +1180,90 @@ export const BuyerPage: React.FC = () => {
 
           {/* Directory listings result grids */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {filteredProducts.map((prod, idx) => (
-              <div 
-                key={idx}
-                className="rounded-xl border border-app-border bg-app-card p-4.5 shadow-sm hover:shadow transition-all duration-200 flex flex-col justify-between"
-              >
-                <div>
-                  <div className="flex justify-between items-start gap-2">
-                    <div>
-                      <strong className="text-sm font-bold text-app-text block">{prod.businessName}</strong>
-                      <span className="text-xs text-app-text-secondary font-medium block mt-0.5">{prod.name}</span>
-                    </div>
-                    <span className="flex items-center gap-0.5 text-xs font-semibold text-app-text bg-app-bg px-2 py-0.5 border border-app-border rounded">
-                      <Star className="h-3 w-3 fill-amber-400 text-amber-400" />
-                      {(prod as any).rating || 4.5}
-                    </span>
-                  </div>
-
-                  <div className="border-t border-app-border/40 my-3 pt-3 space-y-1.5 text-xs text-app-text-secondary">
-                    <div className="flex justify-between">
-                      <span>Pricing:</span>
-                      <strong className="text-primary font-bold">₹{prod.price} / {prod.unit}</strong>
-                    </div>
-                    <div className="flex justify-between">
-                      <span>Available Stock:</span>
-                      <span className="font-semibold text-app-text">{prod.quantityAvailable} {prod.unit}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span>Location:</span>
-                      <span className="font-medium text-app-text flex items-center gap-0.5"><MapPin className="h-3.5 w-3.5 text-primary" /> {prod.location}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span>Availability:</span>
-                      <span className={`font-semibold ${prod.availability === "Immediate" ? 'text-success' : 'text-app-text-secondary'}`}>
-                        {prod.availability}
+            {filteredSuppliers.map((sup, idx) => {
+              const mainProd = sup.matchedProducts[0] || sup.products[0];
+              const hasMoreProducts = sup.products.length > 1;
+              return (
+                <div 
+                  key={idx}
+                  className="rounded-xl border border-app-border bg-app-card p-4.5 shadow-sm hover:shadow transition-all duration-200 flex flex-col justify-between"
+                >
+                  <div>
+                    <div className="flex justify-between items-start gap-2">
+                      <div>
+                        <strong className="text-sm font-bold text-app-text block">{sup.businessName}</strong>
+                        {mainProd && (
+                          <span className="text-xs text-app-text-secondary font-medium block mt-0.5">{mainProd.name}</span>
+                        )}
+                        {hasMoreProducts && (
+                          <span className="inline-block mt-1 text-[10px] bg-primary/10 text-primary px-1.5 py-0.5 rounded font-bold">
+                            + {sup.products.length - 1} other product{sup.products.length > 2 ? 's' : ''}
+                          </span>
+                        )}
+                      </div>
+                      <span className="flex items-center gap-0.5 text-xs font-semibold text-app-text bg-app-bg px-2 py-0.5 border border-app-border rounded">
+                        <Star className="h-3 w-3 fill-amber-400 text-amber-400" />
+                        {sup.rating || 4.5}
                       </span>
                     </div>
+
+                    {mainProd && (
+                      <div className="border-t border-app-border/40 my-3 pt-3 space-y-1.5 text-xs text-app-text-secondary">
+                        <div className="flex justify-between">
+                          <span>Pricing:</span>
+                          <strong className="text-primary font-bold">₹{mainProd.price} / {mainProd.unit}</strong>
+                        </div>
+                        <div className="flex justify-between">
+                          <span>Available Stock:</span>
+                          <span className="font-semibold text-app-text">{mainProd.quantityAvailable} {mainProd.unit}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span>Location:</span>
+                          <span className="font-medium text-app-text flex items-center gap-0.5"><MapPin className="h-3.5 w-3.5 text-primary" /> {sup.location}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span>Availability:</span>
+                          <span className={`font-semibold ${mainProd.availability === "Immediate" ? 'text-success' : 'text-app-text-secondary'}`}>
+                            {mainProd.availability}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-2 pt-2 mt-2 border-t border-app-border/40">
+                    <button
+                      onClick={() => setSelectedSupplierForModal(sup)}
+                      className="rounded-lg border border-app-border bg-app-card hover:bg-app-card-hover text-app-text py-1.5 text-xs font-semibold cursor-pointer"
+                    >
+                      View
+                    </button>
+                    <button
+                      onClick={() => handleConnectSupplier(sup)}
+                      className="rounded-lg bg-primary text-white py-1.5 text-xs font-semibold hover:opacity-90 cursor-pointer"
+                    >
+                      Connect
+                    </button>
+                    <button
+                      onClick={() => {
+                        console.log("Follow clicked", sup.id);
+                        followSupplier(sup.id);
+                      }}
+                      disabled={followedSupplierIds.includes(sup.id)}
+                      className={`rounded-lg py-1.5 text-xs font-semibold border transition-colors ${
+                        followedSupplierIds.includes(sup.id)
+                          ? "bg-primary/10 border-primary text-primary opacity-80 cursor-not-allowed"
+                          : "border-app-border bg-app-card text-app-text hover:bg-app-card-hover cursor-pointer"
+                      }`}
+                    >
+                      {followedSupplierIds.includes(sup.id) ? "Following" : "Follow"}
+                    </button>
                   </div>
                 </div>
+              );
+            })}
 
-                <div className="grid grid-cols-3 gap-2 pt-2 mt-2 border-t border-app-border/40">
-                  <button
-                    onClick={() => alert(`Supplier specifications:\n${prod.description}`)}
-                    className="rounded-lg border border-app-border bg-app-card hover:bg-app-card-hover text-app-text py-1.5 text-xs font-semibold cursor-pointer"
-                  >
-                    View
-                  </button>
-                  <button
-                    onClick={() => handleConnectSupplier({
-                      id: `sup_dyn_${idx}`,
-                      businessName: prod.businessName,
-                      rating: (prod as any).rating || 4.5,
-                      trustScore: (prod as any).trustScore || 92,
-                      location: prod.location,
-                      contactNumber: prod.contactNumber,
-                      businessHours: prod.businessHours,
-                      products: []
-                    })}
-                    className="rounded-lg bg-primary text-white py-1.5 text-xs font-semibold hover:opacity-90 cursor-pointer"
-                  >
-                    Connect
-                  </button>
-                  <button
-                    onClick={() => handleFollowSupplier(prod.businessName)}
-                    className={`rounded-lg py-1.5 text-xs font-semibold border transition-colors cursor-pointer ${
-                      followedIds.includes(prod.businessName)
-                        ? "bg-primary/10 border-primary text-primary"
-                        : "border-app-border bg-app-card text-app-text hover:bg-app-card-hover"
-                    }`}
-                  >
-                    {followedIds.includes(prod.businessName) ? "Following" : "Follow"}
-                  </button>
-                </div>
-              </div>
-            ))}
-
-            {filteredProducts.length === 0 && (
+            {filteredSuppliers.length === 0 && (
               <p className="col-span-2 text-center text-sm text-app-text-secondary py-12 italic border border-dashed border-app-border rounded-xl">
                 No matching suppliers found in manual directory search.
               </p>
@@ -860,157 +1274,72 @@ export const BuyerPage: React.FC = () => {
       </div>
 
       {/* Floating Center AI Assistant (ChatGPT Voice Style Overlay) */}
-      {isVoiceOpen && searchResult && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-md transition-all duration-300">
-          <div className="w-full max-w-sm rounded-2xl border border-primary/20 bg-app-card p-6 shadow-premium-lg animate-fade-in-up m-4 overflow-hidden relative">
-            
-            {/* Header close trigger */}
-            <div className="flex justify-between items-center border-b border-app-border pb-3 mb-4">
-              <div className="flex items-center gap-1.5 text-[10px] font-bold text-app-text-secondary uppercase">
-                <span className="h-2.5 w-2.5 rounded-full bg-success animate-pulse" />
-                <span>AI Speaking ({language})</span>
-              </div>
-              <button 
-                onClick={handleCloseVoice}
-                className="p-1 hover:bg-app-bg rounded-lg text-app-text-secondary cursor-pointer"
-              >
-                <X className="h-4.5 w-4.5" />
-              </button>
-            </div>
-
-            {/* Speaking / listening avatar ripple waveform */}
-            <div className="flex flex-col items-center justify-center py-6 space-y-4">
-              
-              {/* Circular Avatar */}
-              <div className="relative">
-                {/* Visual pulse rings */}
-                {isSpeaking && (
-                  <>
-                    <div className="absolute inset-0 rounded-full bg-primary/20 animate-ping" />
-                    <div className="absolute inset-2 rounded-full bg-secondary/30 animate-pulse" />
-                  </>
-                )}
-                <div className="relative flex h-20 w-20 items-center justify-center rounded-full bg-gradient-to-tr from-primary to-secondary text-white shadow-premium z-10">
-                  <Bot className={`h-10 w-10 ${isSpeaking ? 'animate-bounce' : ''}`} />
-                </div>
-              </div>
-
-              {/* Sound waves graphics */}
-              <div className="flex items-end gap-1 h-6">
-                {Array.from({ length: 15 }).map((_, idx) => {
-                  const animationClass = isSpeaking 
-                    ? idx % 3 === 0 
-                      ? 'animate-wave-slow' 
-                      : idx % 3 === 1 
-                        ? 'animate-wave-medium' 
-                        : 'animate-wave-fast'
-                    : '';
-                  return (
-                    <span
-                      key={idx}
-                      className={`w-1 bg-primary/45 rounded-full h-full transform origin-bottom transition-all duration-300 ${animationClass}`}
-                      style={{ 
-                        animationDelay: `${idx * 0.04}s`,
-                        height: isSpeaking ? '100%' : '15%'
-                      }}
-                    />
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Live synchronized transcript box */}
-            <div 
-              ref={subtitleContainerRef}
-              className="bg-app-bg border border-app-border rounded-xl p-4 max-h-[140px] overflow-y-auto mb-6 scroll-smooth"
-            >
-              {renderHighlightedTranscript()}
-            </div>
-
-            {/* CSS Animation style and flowing line */}
-            <style>{`
-              @keyframes flow-wave {
-                0% { background-position: 0% 50%; }
-                50% { background-position: 100% 50%; }
-                100% { background-position: 0% 50%; }
+      {/* Minimised Assistant Pill Trigger */}
+      {isVoiceOpen && searchResult && isMinimised && (
+        <div className="fixed bottom-6 right-6 z-50 animate-fade-in-up">
+          <button
+            onClick={() => {
+              setIsMinimised(false);
+              // Restart continuous voice interaction if unmuted
+              if (!isMuted) {
+                startAssistantContinuousSpeech();
               }
-              .flowing-line-animation {
-                background: linear-gradient(90deg, #0F766E, #14B8A6, #F59E0B, #14B8A6, #0F766E);
-                background-size: 200% 200%;
-                animation: flow-wave 2s linear infinite;
-              }
-            `}</style>
-            
-            <div className="h-1.5 w-full bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden mb-6">
-              {isSpeaking ? (
-                <div className="h-full w-full flowing-line-animation" />
-              ) : (
-                <div className="h-full w-0 bg-slate-300 dark:bg-slate-700" />
-              )}
-            </div>
-
-            {voiceError && (
-              <div className="mb-6 text-center text-[10px] font-bold text-danger bg-danger/5 border border-danger/25 rounded-xl py-2 px-3 animate-pulse">
-                {voiceError}
-              </div>
-            )}
-
-            {/* Three rounded quick actions */}
-            <div className="space-y-2.5">
-              
-              <button
-                onClick={() => {
-                  handleConnectSupplier(searchResult.bestSupplier);
-                  handleCloseVoice();
-                }}
-                className="w-full flex items-center justify-center gap-2 rounded-full bg-gradient-to-r from-primary to-secondary text-white py-3 text-xs font-bold shadow hover:opacity-95 cursor-pointer"
-              >
-                <PhoneCall className="h-4 w-4" />
-                <span>📞 Connect Supplier</span>
-              </button>
-
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  onClick={() => {
-                    setQuery("");
-                    handleCloseVoice();
-                  }}
-                  className="flex items-center justify-center gap-1 rounded-full border border-app-border bg-app-card hover:bg-app-card-hover text-app-text py-2.5 text-[11px] font-bold cursor-pointer"
-                >
-                  <MessageSquare className="h-3.5 w-3.5 text-primary" />
-                  <span>💬 Ask AI</span>
-                </button>
-
-                <button
-                  onClick={async () => {
-                    const stored = await getSupabaseSuppliers();
-                    const alternative = stored.find((s: any) => s.id !== searchResult.bestSupplier.id && s.products.some((p: any) => p.category === searchResult.bestProduct.category));
-                    if (alternative) {
-                      const altProd = alternative.products.find((p: any) => p.category === searchResult.bestProduct.category)!;
-                      const altResult: MatchResult = {
-                        ...searchResult,
-                        bestSupplier: alternative,
-                        bestProduct: altProd,
-                        matchingReason: `${alternative.businessName} has stock of ${altProd.name} at ₹${altProd.price}/${altProd.unit}.`,
-                        voiceTranscript: `Hello. I found another option. ${alternative.businessName} has Premium ${altProd.category} available for ₹${altProd.price} per ${altProd.unit}. Would you like to connect?`
-                      };
-                      setSearchResult(altResult);
-                      triggerVoiceAssistant(altResult);
-                    } else {
-                      alert("No other matching suppliers found for this category.");
-                    }
-                  }}
-                  className="flex items-center justify-center gap-1 rounded-full border border-app-border bg-app-card hover:bg-app-card-hover text-app-text py-2.5 text-[11px] font-bold cursor-pointer"
-                >
-                  <RefreshCw className="h-3.5 w-3.5 text-primary" />
-                  <span>🔄 Find More</span>
-                </button>
-              </div>
-
-            </div>
-
-          </div>
+            }}
+            className="flex items-center gap-2 rounded-full bg-gradient-to-r from-primary to-secondary text-white px-5 py-3 shadow-premium-lg hover:opacity-95 cursor-pointer font-bold text-xs border border-white/20"
+          >
+            <span className="h-2 w-2 rounded-full bg-success animate-pulse" />
+            <span>🤖 Resume AI Assistant</span>
+          </button>
         </div>
+      )}
+
+      {/* Floating Center AI Assistant (ChatGPT Voice Style Immersive Overlay) */}
+      {/* Floating Center AI Assistant (Immersive Overlay) */}
+      {isVoiceOpen && searchResult && !isMinimised && (
+        isMobile ? (
+          <AICallExperience
+            searchResult={searchResult}
+            language={language}
+            isMuted={isMuted}
+            setIsMuted={setIsMuted}
+            isSpeaking={isSpeaking}
+            isAssistantSpeaking={isAssistantSpeaking}
+            isAssistantThinking={isAssistantThinking}
+            assistantVoiceListening={assistantVoiceListening}
+            buyerSpeechLive={buyerSpeechLive}
+            conversationLog={conversationLog}
+            handleAssistantSend={handleAssistantSend}
+            handleCloseVoice={handleCloseVoice}
+            renderHighlightedTranscript={renderHighlightedTranscript}
+            subtitleContainerRef={subtitleContainerRef}
+            startAssistantSpeaking={startAssistantSpeaking}
+            startAssistantContinuousSpeech={startAssistantContinuousSpeech}
+          />
+        ) : (
+          <ConversationalAssistant
+            searchResult={searchResult}
+            language={language}
+            isMuted={isMuted}
+            setIsMuted={setIsMuted}
+            isMinimised={isMinimised}
+            setIsMinimised={setIsMinimised}
+            isSpeaking={isSpeaking}
+            isAssistantSpeaking={isAssistantSpeaking}
+            isAssistantThinking={isAssistantThinking}
+            assistantVoiceListening={assistantVoiceListening}
+            assistantSpeechText={assistantSpeechText}
+            buyerSpeechLive={buyerSpeechLive}
+            conversationLog={conversationLog}
+            assistantInputText={assistantInputText}
+            setAssistantInputText={setAssistantInputText}
+            handleAssistantSend={handleAssistantSend}
+            handleCloseVoice={handleCloseVoice}
+            handleConnectSupplier={handleConnectSupplier}
+            renderHighlightedTranscript={renderHighlightedTranscript}
+            subtitleContainerRef={subtitleContainerRef}
+            startAssistantContinuousSpeech={startAssistantContinuousSpeech}
+          />
+        )
       )}
 
       {/* Connect Screen Overlay */}
@@ -1065,6 +1394,115 @@ export const BuyerPage: React.FC = () => {
                 </div>
               </div>
             )}
+
+          </div>
+        </div>
+      )}
+
+      {/* Supplier Details Modal */}
+      {selectedSupplierForModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-md animate-fade-in">
+          <div className="w-full max-w-2xl rounded-2xl border border-app-border bg-app-card shadow-premium-lg animate-fade-in-up m-4 overflow-hidden">
+            
+            {/* Modal Header */}
+            <div className="border-b border-app-border p-5 flex justify-between items-center bg-gradient-to-r from-primary/5 to-secondary/5">
+              <div>
+                <h3 className="text-xl font-extrabold text-app-text">{selectedSupplierForModal.businessName}</h3>
+                <p className="text-xs text-app-text-secondary mt-1 flex items-center gap-1">
+                  <MapPin className="h-3.5 w-3.5 text-primary" />
+                  <span>{selectedSupplierForModal.location}</span>
+                </p>
+              </div>
+              <button 
+                onClick={() => setSelectedSupplierForModal(null)}
+                className="p-1 rounded-lg hover:bg-app-bg text-app-text-secondary hover:text-app-text cursor-pointer transition-colors"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-6 space-y-6 max-h-[70vh] overflow-y-auto">
+              
+              {/* Trust & Rating Badges */}
+              <div className="grid grid-cols-2 gap-4">
+                <div className="rounded-xl border border-app-border bg-app-bg/50 p-3.5 text-center">
+                  <span className="text-[10px] font-bold text-app-text-secondary uppercase block">Supplier Rating</span>
+                  <div className="flex items-center justify-center gap-1 mt-1 text-base font-extrabold text-app-text">
+                    <Star className="h-5 w-5 fill-amber-400 text-amber-400" />
+                    <span>{selectedSupplierForModal.rating} / 5.0</span>
+                  </div>
+                </div>
+                <div className="rounded-xl border border-app-border bg-app-bg/50 p-3.5 text-center">
+                  <span className="text-[10px] font-bold text-app-text-secondary uppercase block">Trust Confidence Score</span>
+                  <span className="text-lg font-extrabold text-success mt-1 block">{selectedSupplierForModal.trustScore}%</span>
+                </div>
+              </div>
+
+              {/* Business Metadata */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+                <div className="space-y-1">
+                  <span className="font-bold text-app-text-secondary uppercase">Contact Representative</span>
+                  <p className="text-app-text font-semibold">{selectedSupplierForModal.contactNumber || "+91 90001 88001"}</p>
+                </div>
+                <div className="space-y-1">
+                  <span className="font-bold text-app-text-secondary uppercase">Business Operating Hours</span>
+                  <p className="text-app-text font-semibold">{selectedSupplierForModal.businessHours || "09:00 AM - 06:00 PM"}</p>
+                </div>
+              </div>
+
+              {/* Products Catalog List */}
+              <div className="space-y-3.5">
+                <h4 className="text-xs font-bold text-app-text-secondary uppercase tracking-wider">Catalog of Products</h4>
+                
+                <div className="space-y-3">
+                  {selectedSupplierForModal.products && selectedSupplierForModal.products.length > 0 ? (
+                    selectedSupplierForModal.products.map((p, idx) => (
+                      <div key={idx} className="border border-app-border rounded-xl p-4 bg-app-bg/30 hover:bg-app-bg/50 transition-colors flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+                        <div className="space-y-1.5 max-w-md">
+                          <strong className="text-sm font-bold text-app-text block">{p.name}</strong>
+                          <p className="text-xs text-app-text-secondary leading-normal">{p.description}</p>
+                          <div className="flex flex-wrap gap-3 text-[10px] font-semibold text-app-text-secondary">
+                            <span className="rounded bg-secondary/10 text-secondary border border-secondary/20 px-2 py-0.5">Grade: {p.qualityGrade}</span>
+                            <span>•</span>
+                            <span>Stock: {p.quantityAvailable} {p.unit}</span>
+                            <span>•</span>
+                            <span className={p.availability === "Immediate" ? "text-success" : ""}>{p.availability}</span>
+                          </div>
+                        </div>
+                        <div className="text-right shrink-0">
+                          <span className="text-[10px] font-bold text-app-text-secondary block">Price Offer</span>
+                          <strong className="text-base font-extrabold text-primary block mt-0.5">₹{p.price} / {p.unit}</strong>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <p className="text-center text-xs text-app-text-secondary italic py-6">No products registered under this supplier.</p>
+                  )}
+                </div>
+              </div>
+
+            </div>
+
+            {/* Modal Footer */}
+            <div className="border-t border-app-border p-4 bg-app-bg/40 flex justify-end gap-3.5">
+              <button
+                onClick={() => setSelectedSupplierForModal(null)}
+                className="rounded-xl border border-app-border bg-app-card hover:bg-app-card-hover text-app-text py-2.5 px-5 text-xs font-bold cursor-pointer"
+              >
+                Close
+              </button>
+              <button
+                onClick={() => {
+                  handleConnectSupplier(selectedSupplierForModal);
+                  setSelectedSupplierForModal(null);
+                }}
+                className="flex items-center gap-2 rounded-xl bg-gradient-to-r from-primary to-secondary text-white py-2.5 px-5 text-xs font-bold shadow hover:opacity-95 cursor-pointer"
+              >
+                <PhoneCall className="h-4 w-4" />
+                <span>Connect Supplier</span>
+              </button>
+            </div>
 
           </div>
         </div>

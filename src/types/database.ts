@@ -16,6 +16,10 @@ export interface DbSupplier {
   location: string;
   verified: boolean;
   rating: number;
+  trust_score?: number;
+  contact_number?: string | null;
+  business_hours?: string | null;
+  created_at: string;
 }
 
 export interface DbProduct {
@@ -28,6 +32,7 @@ export interface DbProduct {
   price: number;
   description: string;
   available: boolean;
+  created_at: string;
 }
 
 export interface DbBuyerRequest {
@@ -44,6 +49,61 @@ export interface DbAIRecommendation {
   request_id: string; // UUID references BuyerRequests(id)
   supplier_id: string; // UUID references Suppliers(id)
   confidence_score: number;
+  created_at: string;
+}
+
+export interface DbNotification {
+  id: string;
+  supplier_id: string;
+  buyer_name: string;
+  buyer_company: string;
+  product: string;
+  quantity: string;
+  priority: string;
+  confidence_score: number;
+  status: string;
+  read: boolean;
+  created_at: string;
+}
+
+export interface DbConversationHistory {
+  id: string;
+  session_id: string;
+  user_id?: string | null;
+  role: 'user' | 'assistant';
+  message: string;
+  created_at: string;
+}
+
+export interface DbBuyerDecision {
+  id: string;
+  user_id: string;
+  request_id: string | null;
+  supplier_id: string | null;
+  decision: 'connect' | 'view_more' | 'ask_ai';
+  created_at: string;
+}
+
+export interface DbConversationIntelligence {
+  id: string;
+  session_id: string;
+  buyer_id?: string | null;
+  supplier_id?: string | null;
+  buyer_name: string;
+  buyer_company: string;
+  supplier_name: string;
+  product: string;
+  quantity: string;
+  language: string;
+  ai_summary: string;
+  decision_report: string;
+  transcript: any;
+  status: string;
+  priority: string;
+  closing_probability: number;
+  timeline: any;
+  sales_coach_report: any;
+  whatsapp_status: string;
   created_at: string;
 }
 
@@ -75,6 +135,27 @@ export interface Database {
         Insert: Omit<DbAIRecommendation, 'id' | 'created_at'> & { id?: string; created_at?: string };
         Update: Partial<DbAIRecommendation>;
       };
+      notifications: {
+        Row: DbNotification;
+        Insert: Omit<DbNotification, 'id' | 'created_at'> & { id?: string; created_at?: string };
+        Update: Partial<DbNotification>;
+      };
+      conversation_history: {
+        Row: DbConversationHistory;
+        Insert: Omit<DbConversationHistory, 'id' | 'created_at'> & { id?: string; created_at?: string };
+        Update: Partial<DbConversationHistory>;
+      };
+      buyer_decisions: {
+        Row: DbBuyerDecision;
+        Insert: Omit<DbBuyerDecision, 'id' | 'created_at'> & { id?: string; created_at?: string };
+        Update: Partial<DbBuyerDecision>;
+      };
+      conversation_intelligence: {
+        Row: DbConversationIntelligence;
+        Insert: Omit<DbConversationIntelligence, 'id' | 'created_at'> & { id?: string; created_at?: string };
+        Update: Partial<DbConversationIntelligence>;
+      };
     };
   };
 }
+

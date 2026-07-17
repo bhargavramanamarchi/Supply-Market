@@ -6,7 +6,8 @@ export interface SpeechRecognitionHook {
     lang: string,
     onResult: (text: string) => void,
     onEnd: () => void,
-    onError: (err: string) => void
+    onError: (err: string) => void,
+    onInterimResult?: (text: string) => void
   ) => void;
   stop: () => void;
   supported: boolean;
@@ -31,14 +32,15 @@ export const getSpeechRecognition = (): SpeechRecognitionHook => {
   if (SpeechRecognitionClass) {
     recognition = new SpeechRecognitionClass();
     recognition.continuous = false;
-    recognition.interimResults = false;
+    recognition.interimResults = true;
   }
 
   const start = (
     lang: string,
     onResult: (text: string) => void,
     onEnd: () => void,
-    onError: (err: string) => void
+    onError: (err: string) => void,
+    onInterimResult?: (text: string) => void
   ) => {
     if (!recognition) {
       onError("Speech Recognition is not supported by your browser.");
@@ -50,12 +52,30 @@ export const getSpeechRecognition = (): SpeechRecognitionHook => {
     isListening = true;
 
     recognition.onresult = (event: any) => {
-      const transcript = event.results[0][0].transcript;
-      onResult(transcript);
+      let finalTranscript = "";
+      let interimTranscript = "";
+
+      for (let i = event.resultIndex; i < event.results.length; ++i) {
+        const transcript = event.results[i][0].transcript;
+        if (event.results[i].isFinal) {
+          finalTranscript += transcript;
+        } else {
+          interimTranscript += transcript;
+        }
+      }
+
+      if (onInterimResult && interimTranscript) {
+        onInterimResult(interimTranscript);
+      }
+      if (finalTranscript) {
+        onResult(finalTranscript);
+      }
     };
 
     recognition.onerror = (event: any) => {
       isListening = false;
+      // Ignore abort errors that are triggered when manually stopping speech recognition
+      if (event.error === 'aborted') return;
       onError(`Voice error: ${event.error}`);
     };
 
@@ -98,9 +118,52 @@ export interface SpeakOptions {
 let activeAudio: HTMLAudioElement | null = null;
 let activeInterval: any = null;
 
+const speakWithBrowserSynthesis = (text: string, lang: string, options: SpeakOptions) => {
+  if (!('speechSynthesis' in window)) {
+    if (options.onError) options.onError("Speech synthesis not supported in this browser.");
+    return;
+  }
+
+  // Cancel any active synthesis
+  window.speechSynthesis.cancel();
+
+  const utterance = new SpeechSynthesisUtterance(text);
+  const langCode = LANG_CODE_MAP[lang] || "en-IN";
+  utterance.lang = langCode;
+
+  // Try to find a voice that matches
+  const voices = window.speechSynthesis.getVoices();
+  const matchedVoice = voices.find(v => v.lang.toLowerCase().replace('_', '-').startsWith(langCode.toLowerCase()));
+  if (matchedVoice) {
+    utterance.voice = matchedVoice;
+  }
+
+  // Set boundary for word highlight updates
+  utterance.onboundary = (event) => {
+    if (event.name === 'word' && options.onBoundary) {
+      options.onBoundary(event.charIndex, event.charLength || 0);
+    }
+  };
+
+  utterance.onend = () => {
+    if (options.onEnd) options.onEnd();
+  };
+
+  utterance.onerror = (e) => {
+    if (e.error === 'interrupted' || e.error === 'canceled') return;
+    if (options.onError) options.onError(e.error || "Browser speech synthesis failed.");
+  };
+
+  window.speechSynthesis.speak(utterance);
+};
+
 export const speakText = async (options: SpeakOptions) => {
   // Stop any ongoing audio playbacks and clear active intervals
   stopSpeaking();
+
+  if ('speechSynthesis' in window) {
+    window.speechSynthesis.cancel();
+  }
 
   try {
     // Generate the cloud TTS audio URL using Murf API
@@ -158,16 +221,18 @@ export const speakText = async (options: SpeakOptions) => {
 
     audio.addEventListener("error", (e) => {
       stopSpeaking();
-      if (options.onError) options.onError(e);
+      console.warn("Murf audio playback error, falling back to Browser Speech Synthesis", e);
+      if (options.onVoiceFallback) options.onVoiceFallback(true);
+      speakWithBrowserSynthesis(options.text, options.lang, options);
     });
 
     await audio.play();
 
   } catch (err: any) {
     stopSpeaking();
-    if (options.onError) {
-      options.onError(err.message || "Unable to generate AI voice.");
-    }
+    console.warn("Murf synthesis generation failed, falling back to Browser Speech Synthesis", err);
+    if (options.onVoiceFallback) options.onVoiceFallback(true);
+    speakWithBrowserSynthesis(options.text, options.lang, options);
   }
 };
 
@@ -179,5 +244,8 @@ export const stopSpeaking = () => {
   if (activeInterval) {
     clearInterval(activeInterval);
     activeInterval = null;
+  }
+  if ('speechSynthesis' in window) {
+    window.speechSynthesis.cancel();
   }
 };

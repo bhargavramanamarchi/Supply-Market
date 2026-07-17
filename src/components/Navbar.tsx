@@ -1,9 +1,10 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Sun, Moon, Menu, X, Bot, ShieldCheck, User, Bell, Languages } from "lucide-react";
 import { useTheme } from "./ThemeContext";
 import { useLanguage } from "../context/LanguageContext";
 import { useAuth } from "../hooks/useAuth";
+import { getStoredNotifications, saveNotifications, playNotificationChime } from "../services/notificationService";
 
 export const Navbar: React.FC = () => {
   const { theme, toggleTheme } = useTheme();
@@ -17,19 +18,50 @@ export const Navbar: React.FC = () => {
 
   const navLinks = [
     { name: t("buyerDashboard"), path: "/" },
-    { name: t("sellerDashboard"), path: "/seller" },
-  ];
+    { name: t("sellerDashboard"), path: "/seller" }
+  ].filter(link => {
+    if (!user) return false;
+    if (link.path === "/" && user.account_type === "seller") return false;
+    if (link.path === "/seller" && user.account_type === "buyer") return false;
+    return true;
+  });
 
   const languagesList: Array<"English" | "Telugu" | "Hindi" | "Tamil" | "Kannada" | "Malayalam"> = [
     "English", "Telugu", "Hindi", "Tamil", "Kannada", "Malayalam"
   ];
 
-  const [notifications, setNotifications] = useState([
-    { id: 1, text: "New connection request from Sai Packaging", time: "5 mins ago", unread: true },
-    { id: 2, text: "Sri Lakshmi Enterprises accepted your connection request", time: "1 hour ago", unread: true },
-    { id: 3, text: "Structural TMT Rebars back in stock at RK Steel Mart", time: "Today, 10:00 AM", unread: false },
-    { id: 4, text: "New buyer Verma Food Industries contacted you", time: "Yesterday", unread: false }
-  ]);
+  const [notifications, setNotifications] = useState<any[]>([]);
+
+  useEffect(() => {
+    if (!user) {
+      setNotifications([]);
+      return;
+    }
+
+    // Initialize from local storage
+    setNotifications(getStoredNotifications());
+
+    // Observer/handler for storage changes (cross-view sync)
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === "supply_market_notifications") {
+        setNotifications(getStoredNotifications());
+      }
+    };
+
+    // Observer/handler for custom events (chime trigger + immediate sync in same tab)
+    const handleCustomNotification = () => {
+      playNotificationChime();
+      setNotifications(getStoredNotifications());
+    };
+
+    window.addEventListener("storage", handleStorageChange);
+    window.addEventListener("new-notification", handleCustomNotification);
+
+    return () => {
+      window.removeEventListener("storage", handleStorageChange);
+      window.removeEventListener("new-notification", handleCustomNotification);
+    };
+  }, [user]);
 
   const unreadCount = notifications.filter(n => n.unread).length;
 
@@ -41,7 +73,8 @@ export const Navbar: React.FC = () => {
   };
 
   const handleMarkAllRead = () => {
-    setNotifications(prev => prev.map(n => ({ ...n, unread: false })));
+    const updated = notifications.map(n => ({ ...n, unread: false }));
+    saveNotifications(updated);
   };
 
   return (
@@ -144,12 +177,18 @@ export const Navbar: React.FC = () => {
                     </button>
                   </div>
                   <div className="divide-y divide-app-border max-h-64 overflow-y-auto">
-                    {notifications.map((notif) => (
-                      <div key={notif.id} className={`p-3 text-xs space-y-1 hover:bg-app-bg transition-colors ${notif.unread ? 'bg-primary/5' : ''}`}>
-                        <p className="text-app-text leading-normal">{notif.text}</p>
-                        <span className="text-[10px] text-app-text-secondary block text-right">{notif.time}</span>
+                    {notifications.length === 0 ? (
+                      <div className="p-4 text-center text-xs text-app-text-secondary">
+                        No notifications yet.
                       </div>
-                    ))}
+                    ) : (
+                      notifications.map((notif) => (
+                        <div key={notif.id} className={`p-3 text-xs space-y-1 hover:bg-app-bg transition-colors ${notif.unread ? 'bg-primary/5' : ''}`}>
+                          <p className="text-app-text leading-normal">{notif.text}</p>
+                          <span className="text-[10px] text-app-text-secondary block text-right">{notif.time}</span>
+                        </div>
+                      ))
+                    )}
                   </div>
                 </div>
               )}
@@ -175,7 +214,7 @@ export const Navbar: React.FC = () => {
                 className="flex items-center gap-2 border-l border-app-border pl-4 hover:opacity-90 transition-opacity cursor-pointer text-left animate-fade-in"
               >
                 <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/10 border border-primary/20 text-primary text-xs font-bold">
-                  <span>{user.name.split(" ").map(n => n[0]).join("")}</span>
+                  <span>{user.name ? user.name.split(" ").map(n => n[0]).join("").toUpperCase() : "U"}</span>
                 </div>
                 <div className="flex flex-col text-left">
                   <span className="text-xs font-bold text-app-text leading-tight">{user.name}</span>

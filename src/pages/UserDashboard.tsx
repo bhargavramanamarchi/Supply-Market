@@ -15,7 +15,6 @@ import {
   Moon,
   Sun,
   MessageSquare,
-  UserPlus,
   UserMinus,
   ExternalLink
 } from "lucide-react";
@@ -24,12 +23,13 @@ import { useLanguage } from "../context/LanguageContext";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 import { LogOut, Edit2, Save, XCircle } from "lucide-react";
+import { supabase } from "../services/supabase";
 
 export const UserDashboard: React.FC = () => {
   const { theme, toggleTheme } = useTheme();
   const { language, setLanguage, t } = useLanguage();
   const navigate = useNavigate();
-  const { user, signOut, updateProfile } = useAuth();
+  const { user, signOut, updateProfile, unfollowSupplier } = useAuth();
   const [activeTab, setActiveTab] = useState<"profile" | "connections" | "activity" | "settings">("profile");
 
   const [isEditing, setIsEditing] = useState(false);
@@ -37,6 +37,7 @@ export const UserDashboard: React.FC = () => {
   const [editCompany, setEditCompany] = useState("");
   const [editPhone, setEditPhone] = useState("");
   const [editCity, setEditCity] = useState("");
+  const [editState, setEditState] = useState("");
   const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
@@ -45,6 +46,7 @@ export const UserDashboard: React.FC = () => {
       setEditCompany(user.company || "");
       setEditPhone(user.phone || "");
       setEditCity(user.city || "");
+      setEditState(user.state || "");
     }
   }, [user, isEditing]);
 
@@ -58,7 +60,8 @@ export const UserDashboard: React.FC = () => {
       full_name: editName,
       organization: editCompany,
       phone: editPhone,
-      city: editCity
+      city: editCity,
+      state: editState
     });
     setIsSaving(false);
     if (success) {
@@ -71,75 +74,197 @@ export const UserDashboard: React.FC = () => {
     navigate("/home");
   };
 
-  // Mock connections data
-  const [connections, setConnections] = useState([
-    { id: "sup_1", name: "ABC Traders", city: "Vijayawada", product: "Turmeric, Rice", status: "Connected", isFollowing: true },
-    { id: "sup_2", name: "Sri Lakshmi Enterprises", city: "Hyderabad", product: "Rice, Cotton", status: "Connected", isFollowing: true },
-    { id: "sup_5", name: "Sai Packaging", city: "Bengaluru", product: "Packaging", status: "Pending", isFollowing: false },
-    { id: "sup_4", name: "RK Steel Mart", city: "Chennai", product: "Steel", status: "Following", isFollowing: true },
-    { id: "sup_6", name: "Warangal Cement Agency", city: "Warangal", product: "Cement", status: "None", isFollowing: false },
-  ]);
-
-  const handleFollowToggle = (id: string) => {
-    setConnections(prev => prev.map(c => {
-      if (c.id === id) {
-        const nextFollowing = !c.isFollowing;
-        let nextStatus = c.status;
-        if (nextFollowing && c.status === "None") nextStatus = "Following";
-        else if (!nextFollowing && c.status === "Following") nextStatus = "None";
-        return { ...c, isFollowing: nextFollowing, status: nextStatus };
-      }
-      return c;
-    }));
-  };
-
-  const handleConnectToggle = (id: string) => {
-    setConnections(prev => prev.map(c => {
-      if (c.id === id) {
-        let nextStatus = c.status;
-        if (c.status === "Connected") {
-          nextStatus = c.isFollowing ? "Following" : "None";
-        } else if (c.status === "Pending") {
-          nextStatus = c.isFollowing ? "Following" : "None";
-        } else {
-          nextStatus = "Pending";
-        }
-        return { ...c, status: nextStatus };
-      }
-      return c;
-    }));
-  };
+  // Real dashboard connections, searches and activity data
+  const [buyerSearches, setBuyerSearches] = useState<any[]>([]);
+  const [buyerSaved, setBuyerSaved] = useState<any[]>([]);
+  const [sellerBuyers, setSellerBuyers] = useState<any[]>([]);
+  const [sellerOrders, setSellerOrders] = useState<any[]>([]);
+  const [supplierProfile, setSupplierProfile] = useState<any>(null);
+  const [followedSuppliers, setFollowedSuppliers] = useState<any[]>([]);
 
   // Recent activity subtabs
   const [activityTab, setActivityTab] = useState<"buyer" | "seller">("buyer");
 
-  const buyerActivities = {
-    searches: [
-      { text: 'Sourced "100kg turmeric in Vijayawada"', time: "Today, 03:00 PM" },
-      { text: 'Sourced "premium basmati rice bulk"', time: "Yesterday" }
-    ],
-    connections: [
-      { name: "Sri Lakshmi Enterprises", status: "Connected", date: "04 July 2026" }
-    ],
-    saved: [
-      { name: "ABC Traders", category: "Turmeric" }
-    ],
-    conversations: [
-      { topic: "Turmeric Sourcing Consultation", date: "Today" }
-    ]
+  const loadFollowedSuppliers = async () => {
+    if (!user) return;
+    try {
+      const { data, error } = await supabase
+        .from('buyer_follows')
+        .select(`
+          id,
+          supplier_id,
+          suppliers (
+            id,
+            company_name,
+            location,
+            rating,
+            trust_score,
+            contact_number,
+            business_hours,
+            products (
+              category
+            )
+          )
+        `)
+        .eq('buyer_id', user.id);
+
+      if (error) {
+        console.error("Error loading followed suppliers:", error);
+        return;
+      }
+
+      const formatted = (data || []).map((row: any) => {
+        const sup = row.suppliers;
+        if (!sup) return null;
+        
+        const categories = sup.products && sup.products.length > 0
+          ? Array.from(new Set(sup.products.map((p: any) => p.category))).join(', ') 
+          : 'General Supplies';
+
+        return {
+          id: sup.id,
+          name: sup.company_name,
+          city: sup.location?.split(',')[0]?.trim() || sup.location,
+          product: categories,
+          status: 'Following',
+          isFollowing: true,
+          contactNumber: sup.contact_number
+        };
+      }).filter(Boolean);
+
+      setFollowedSuppliers(formatted);
+    } catch (err) {
+      console.error("Error in loadFollowedSuppliers:", err);
+    }
   };
 
-  const sellerActivities = {
-    buyers: [
-      { name: "Verma Food Industries", product: "Turmeric Powder", date: "Today" }
-    ],
-    orders: [
-      { id: "ORD-9843", amount: "₹18,000", status: "Pending" }
-    ],
-    updates: [
-      { text: "Updated Superfine Basmati Rice stock to 12,000kg", date: "Yesterday" }
-    ]
+  const handleUnfollow = async (supplierId: string) => {
+    if (!user) return;
+    try {
+      const { error } = await supabase
+        .from('buyer_follows')
+        .delete()
+        .eq('buyer_id', user.id)
+        .eq('supplier_id', supplierId);
+
+      if (error) {
+        console.error("Error unfollowing supplier:", error);
+        return;
+      }
+      
+      setFollowedSuppliers(prev => prev.filter(c => c.id !== supplierId));
+      if (unfollowSupplier) {
+        await unfollowSupplier(supplierId);
+      }
+    } catch (err) {
+      console.error("Error in handleUnfollow:", err);
+    }
   };
+
+  useEffect(() => {
+    if (activeTab === "connections") {
+      loadFollowedSuppliers();
+    }
+  }, [activeTab, user?.id]);
+
+  useEffect(() => {
+    if (!user) return;
+
+    const loadData = async () => {
+      try {
+        // Query buyerrequests with their recommendations and suppliers
+        const { data: requests, error } = await (supabase as any)
+          .from('buyerrequests')
+          .select('*, airecommendations(id, confidence_score, suppliers(*))')
+          .eq('buyer_id', user.id)
+          .order('created_at', { ascending: false });
+
+        if (error) throw error;
+
+        // Map searches for activity tab
+        const searches = (requests || []).map((r: any) => ({
+          text: `Sourced "${r.requirement}"`,
+          time: new Date(r.created_at).toLocaleDateString('en-IN', {
+            day: 'numeric',
+            month: 'short',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit'
+          })
+        }));
+        setBuyerSearches(searches);
+
+        // Map connections (from recommendations)
+        const matchedSuppliersMap = new Map();
+        (requests || []).forEach((r: any) => {
+          (r.airecommendations || []).forEach((rec: any) => {
+            if (rec.suppliers) {
+              matchedSuppliersMap.set(rec.suppliers.id, {
+                id: rec.suppliers.id,
+                name: rec.suppliers.company_name,
+                city: rec.suppliers.location.split(',')[0]?.trim() || rec.suppliers.location,
+                product: r.requirement.split('for')[0]?.trim() || r.requirement,
+                status: 'Connected',
+                isFollowing: true
+              });
+            }
+          });
+        });
+
+        const activeConnections = Array.from(matchedSuppliersMap.values());
+
+        // For saved: just take the distinct suppliers from activeConnections
+        const saved = activeConnections.map(c => ({
+          name: c.name,
+          category: c.product
+        }));
+        setBuyerSaved(saved);
+
+        // If user is a seller or both, load supplier details & seller activities
+        if (user.account_type === 'seller' || user.account_type === 'both') {
+          const { data: supData } = await (supabase as any)
+            .from('suppliers')
+            .eq('user_id', user.id)
+            .maybeSingle();
+
+          if (supData) {
+            setSupplierProfile(supData);
+
+            const { data: recs, error: recsError } = await (supabase as any)
+              .from('airecommendations')
+              .select('*, request:buyerrequests(*, users(*))')
+              .eq('supplier_id', supData.id)
+              .order('created_at', { ascending: false });
+
+            if (recsError) throw recsError;
+
+            const buyers = (recs || []).map((r: any) => ({
+              name: r.request?.users?.full_name || 'Anonymous Buyer',
+              product: r.request?.requirement || 'Product Sourcing',
+              date: new Date(r.created_at).toLocaleDateString('en-IN', {
+                day: 'numeric',
+                month: 'short'
+              })
+            }));
+            setSellerBuyers(buyers);
+
+            // Map mock orders based on recommendations (since there is no orders table)
+            const orders = (recs || []).map((_r: any, idx: number) => ({
+              id: `ORD-${9800 + idx}`,
+              amount: `₹${(20000 + idx * 5000).toLocaleString('en-IN')}`,
+              status: idx % 2 === 0 ? 'Completed' : 'Pending'
+            }));
+            setSellerOrders(orders);
+          }
+        }
+
+      } catch (err) {
+        console.error("Error loading dashboard data:", err);
+      }
+    };
+
+    loadData();
+  }, [user]);
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8 bg-app-bg min-h-[calc(100vh-4rem)] transition-colors duration-300">
@@ -243,9 +368,9 @@ export const UserDashboard: React.FC = () => {
                         placeholder="Organization Name"
                       />
                     ) : (
-                      <p className="text-sm font-semibold text-primary">{user?.company || "IndoCorp Agro Food Products"}</p>
+                      <p className="text-sm font-semibold text-primary">{user?.company || ""}</p>
                     )}
-                    <p className="text-xs text-app-text-secondary">{user?.position || t("procurementManager")}</p>
+                    <p className="text-xs text-app-text-secondary">{user?.position || ""}</p>
                   </div>
                 </div>
               </div>
@@ -257,7 +382,7 @@ export const UserDashboard: React.FC = () => {
                     <Mail className="h-4.5 w-4.5 text-primary" />
                     <div>
                       <span className="text-[10px] font-bold text-app-text-secondary uppercase block">{t("corporateEmail")}</span>
-                      <span className="font-semibold text-app-text">{user ? user.email : "skumar@indocorp.com"}</span>
+                      <span className="font-semibold text-app-text">{user ? user.email : ""}</span>
                     </div>
                   </div>
 
@@ -274,7 +399,7 @@ export const UserDashboard: React.FC = () => {
                           placeholder="Phone number"
                         />
                       ) : (
-                        <span className="font-semibold text-app-text">{user?.phone || "+91 90008 90009"}</span>
+                        <span className="font-semibold text-app-text">{user?.phone || ""}</span>
                       )}
                     </div>
                   </div>
@@ -286,15 +411,26 @@ export const UserDashboard: React.FC = () => {
                     <div className="flex-grow">
                       <span className="text-[10px] font-bold text-app-text-secondary uppercase block">{t("headquarters")}</span>
                       {isEditing ? (
-                        <input
-                          type="text"
-                          value={editCity}
-                          onChange={(e) => setEditCity(e.target.value)}
-                          className="rounded-lg border border-app-border bg-app-bg px-2 py-0.5 text-xs text-app-text focus:border-primary outline-none mt-0.5"
-                          placeholder="City, State"
-                        />
+                        <div className="flex gap-2 mt-1">
+                          <input
+                            type="text"
+                            value={editCity}
+                            onChange={(e) => setEditCity(e.target.value)}
+                            className="rounded-lg border border-app-border bg-app-bg px-2 py-0.5 text-xs text-app-text focus:border-primary outline-none w-1/2"
+                            placeholder="City"
+                          />
+                          <input
+                            type="text"
+                            value={editState}
+                            onChange={(e) => setEditState(e.target.value)}
+                            className="rounded-lg border border-app-border bg-app-bg px-2 py-0.5 text-xs text-app-text focus:border-primary outline-none w-1/2"
+                            placeholder="State"
+                          />
+                        </div>
                       ) : (
-                        <span className="font-semibold text-app-text">{user?.city || "Hyderabad, Telangana"}</span>
+                        <span className="font-semibold text-app-text">
+                          {user?.city ? (user.state ? `${user.city}, ${user.state}` : user.city) : ""}
+                        </span>
                       )}
                     </div>
                   </div>
@@ -303,7 +439,13 @@ export const UserDashboard: React.FC = () => {
                     <CheckCircle className="h-4.5 w-4.5 text-primary" />
                     <div>
                       <span className="text-[10px] font-bold text-app-text-secondary uppercase block">{t("activeCatalogReg")}</span>
-                      <span className="font-semibold text-app-text">Verified IndoCorp Spices</span>
+                      <span className="font-semibold text-app-text">
+                        {user?.account_type === 'buyer' 
+                          ? 'Buyer Account Registered' 
+                          : supplierProfile 
+                            ? `${supplierProfile.company_name} (${supplierProfile.verified ? 'Verified' : 'Pending Verification'})`
+                            : 'Seller Account Registered'}
+                      </span>
                     </div>
                   </div>
                 </div>
@@ -359,63 +501,54 @@ export const UserDashboard: React.FC = () => {
               </div>
 
               <div className="divide-y divide-app-border">
-                {connections.map((c) => (
-                  <div key={c.id} className="py-4 flex flex-col sm:flex-row justify-between sm:items-center gap-4 hover:bg-app-bg/25 px-2 rounded-xl transition-colors">
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <strong className="text-sm font-bold text-app-text">{c.name}</strong>
-                        <span className={`px-2 py-0.5 rounded text-[9px] font-extrabold border ${
-                          c.status === "Connected" 
-                            ? "bg-success/10 border-success/20 text-success" 
-                            : c.status === "Pending"
-                              ? "bg-amber-100 border-amber-200 text-amber-600 animate-pulse"
-                              : c.status === "Following"
-                                ? "bg-primary/10 border-primary/20 text-primary"
-                                : "bg-slate-100 border-slate-200 text-app-text-secondary"
-                        }`}>
-                          {c.status}
-                        </span>
-                      </div>
-                      <span className="text-xs text-app-text-secondary block mt-0.5">Sells: {c.product} | City: {c.city}</span>
-                    </div>
-
-                    <div className="flex flex-wrap items-center gap-2 text-xs">
-                      {/* Follow Button */}
-                      <button
-                        onClick={() => handleFollowToggle(c.id)}
-                        className={`flex items-center gap-1 rounded-lg px-2.5 py-1.5 font-bold border transition-colors cursor-pointer ${
-                          c.isFollowing 
-                            ? "bg-primary/15 border-primary text-primary" 
-                            : "border-app-border bg-app-card text-app-text hover:bg-app-card-hover"
-                        }`}
-                      >
-                        {c.isFollowing ? <UserMinus className="h-3.5 w-3.5" /> : <UserPlus className="h-3.5 w-3.5" />}
-                        <span>{c.isFollowing ? t("followingBtn") : t("followBtn")}</span>
-                      </button>
-
-                      {/* Connect Button */}
-                      <button
-                        onClick={() => handleConnectToggle(c.id)}
-                        className={`rounded-lg px-2.5 py-1.5 font-bold border transition-colors cursor-pointer ${
-                          c.status === "Connected"
-                            ? "border-danger bg-danger/10 text-danger hover:bg-danger/15"
-                            : "bg-primary text-white border-primary hover:opacity-90"
-                        }`}
-                      >
-                        {c.status === "Connected" ? t("removeConn") : c.status === "Pending" ? "Pending..." : t("connectBtn")}
-                      </button>
-
-                      {/* Message/External Details */}
-                      <button
-                        onClick={() => alert(`Direct dialogue window initiated with ${c.name}`)}
-                        className="rounded-lg border border-app-border bg-app-card hover:bg-app-card-hover text-app-text p-1.5 cursor-pointer"
-                        title={t("sendMessage")}
-                      >
-                        <MessageSquare className="h-4 w-4" />
-                      </button>
-                    </div>
+                {followedSuppliers.length === 0 ? (
+                  <div className="py-8 text-center text-app-text-secondary text-sm">
+                    No followed suppliers yet. Add suppliers to your Hotline Connections using the Sourcing Assistant or Directory.
                   </div>
-                ))}
+                ) : (
+                  followedSuppliers.map((c) => (
+                    <div key={c.id} className="py-4 flex flex-col sm:flex-row justify-between sm:items-center gap-4 hover:bg-app-bg/25 px-2 rounded-xl transition-colors">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <strong className="text-sm font-bold text-app-text">{c.name}</strong>
+                          <span className="px-2 py-0.5 rounded text-[9px] font-extrabold border bg-success/10 border-success/20 text-success">
+                            {c.status}
+                          </span>
+                        </div>
+                        <span className="text-xs text-app-text-secondary block mt-0.5">Sells: {c.product} | City: {c.city}</span>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2 text-xs">
+                        {/* Remove / Unfollow Button */}
+                        <button
+                          onClick={() => handleUnfollow(c.id)}
+                          className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 font-bold border border-danger bg-danger/10 text-danger hover:bg-danger/15 cursor-pointer transition-colors"
+                        >
+                          <UserMinus className="h-3.5 w-3.5" />
+                          <span>Remove</span>
+                        </button>
+
+                        {/* Call Representative Button */}
+                        <a
+                          href={`tel:${c.contactNumber || "+91 90008 90009"}`}
+                          className="rounded-lg bg-primary text-white border-primary hover:opacity-90 px-2.5 py-1.5 font-bold border flex items-center gap-1.5"
+                        >
+                          <Phone className="h-3.5 w-3.5" />
+                          <span>Call Sales</span>
+                        </a>
+
+                        {/* Message/External Details */}
+                        <button
+                          onClick={() => alert(`Direct dialogue window initiated with ${c.name}`)}
+                          className="rounded-lg border border-app-border bg-app-card hover:bg-app-card-hover text-app-text p-1.5 cursor-pointer"
+                          title={t("sendMessage")}
+                        >
+                          <MessageSquare className="h-4 w-4" />
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                )}
               </div>
             </div>
           )}
@@ -457,21 +590,33 @@ export const UserDashboard: React.FC = () => {
                     <div>
                       <strong className="text-[10px] font-bold text-app-text-secondary uppercase tracking-wider block mb-2">{t("recentSearches")}</strong>
                       <div className="space-y-2">
-                        {buyerActivities.searches.map((s, idx) => (
-                          <div key={idx} className="bg-app-bg border border-app-border p-2.5 rounded-lg flex justify-between items-center">
-                            <span className="text-app-text font-medium">{s.text}</span>
-                            <span className="text-[9px] text-app-text-secondary">{s.time}</span>
+                        {buyerSearches.length === 0 ? (
+                          <div className="bg-app-bg border border-app-border p-3 rounded-lg text-app-text-secondary text-xs">
+                            No searches logged yet.
                           </div>
-                        ))}
+                        ) : (
+                          buyerSearches.map((s, idx) => (
+                            <div key={idx} className="bg-app-bg border border-app-border p-2.5 rounded-lg flex justify-between items-center">
+                              <span className="text-app-text font-medium">{s.text}</span>
+                              <span className="text-[9px] text-app-text-secondary">{s.time}</span>
+                            </div>
+                          ))
+                        )}
                       </div>
                     </div>
 
                     <div>
                       <strong className="text-[10px] font-bold text-app-text-secondary uppercase tracking-wider block mb-2">{t("recentConversationalLogs")}</strong>
-                      <div className="bg-app-bg border border-app-border p-3 rounded-lg flex justify-between items-center">
-                        <span className="font-semibold text-app-text">Turmeric pricing search details</span>
-                        <span className="text-[9px] text-app-text-secondary">Today</span>
-                      </div>
+                      {buyerSearches.length === 0 ? (
+                        <div className="bg-app-bg border border-app-border p-3 rounded-lg text-app-text-secondary text-xs">
+                          No conversational logs.
+                        </div>
+                      ) : (
+                        <div className="bg-app-bg border border-app-border p-3 rounded-lg flex justify-between items-center">
+                          <span className="font-semibold text-app-text">Sourcing Assistant matched query</span>
+                          <span className="text-[9px] text-app-text-secondary">Recent</span>
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -480,27 +625,39 @@ export const UserDashboard: React.FC = () => {
                     <div>
                       <strong className="text-[10px] font-bold text-app-text-secondary uppercase tracking-wider block mb-2">{t("savedSourcedSuppliers")}</strong>
                       <div className="space-y-2">
-                        {buyerActivities.saved.map((s, idx) => (
-                          <div key={idx} className="bg-app-bg border border-app-border p-2.5 rounded-lg flex justify-between items-center">
-                            <div>
-                              <strong className="text-app-text font-bold block">{s.name}</strong>
-                              <span className="text-[10px] text-app-text-secondary">{s.category}</span>
-                            </div>
-                            <ExternalLink className="h-4 w-4 text-primary" />
+                        {buyerSaved.length === 0 ? (
+                          <div className="bg-app-bg border border-app-border p-3 rounded-lg text-app-text-secondary text-xs">
+                            No saved suppliers.
                           </div>
-                        ))}
+                        ) : (
+                          buyerSaved.map((s, idx) => (
+                            <div key={idx} className="bg-app-bg border border-app-border p-2.5 rounded-lg flex justify-between items-center">
+                              <div>
+                                <strong className="text-app-text font-bold block">{s.name}</strong>
+                                <span className="text-[10px] text-app-text-secondary">{s.category}</span>
+                              </div>
+                              <ExternalLink className="h-4 w-4 text-primary" />
+                            </div>
+                          ))
+                        )}
                       </div>
                     </div>
 
                     <div>
                       <strong className="text-[10px] font-bold text-app-text-secondary uppercase tracking-wider block mb-2">{t("hotlinePurchaseHistory")}</strong>
-                      <div className="bg-app-bg border border-app-border p-3 rounded-lg flex justify-between items-center text-xs">
-                        <div>
-                          <strong className="text-app-text block">150 kg Turmeric Powder</strong>
-                          <span className="text-[10px] text-app-text-secondary">From ABC Traders</span>
+                      {buyerSaved.length === 0 ? (
+                        <div className="bg-app-bg border border-app-border p-3 rounded-lg text-app-text-secondary text-xs">
+                          No transaction history.
                         </div>
-                        <span className="font-bold text-primary">₹18,000</span>
-                      </div>
+                      ) : (
+                        <div className="bg-app-bg border border-app-border p-3 rounded-lg flex justify-between items-center text-xs">
+                          <div>
+                            <strong className="text-app-text block">Matched Supplier Contact Bridge</strong>
+                            <span className="text-[10px] text-app-text-secondary">Hotline Bridge Connected</span>
+                          </div>
+                          <span className="font-bold text-primary">Connected</span>
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -515,19 +672,27 @@ export const UserDashboard: React.FC = () => {
                     <div>
                       <strong className="text-[10px] font-bold text-app-text-secondary uppercase tracking-wider block mb-2">{t("connectedBuyerActions")}</strong>
                       <div className="space-y-2">
-                        {sellerActivities.buyers.map((s, idx) => (
-                          <div key={idx} className="bg-app-bg border border-app-border p-2.5 rounded-lg flex justify-between items-center">
-                            <span className="text-app-text font-medium">{s.name} connected</span>
-                            <span className="text-[9px] text-app-text-secondary">{s.date}</span>
+                        {sellerBuyers.length === 0 ? (
+                          <div className="bg-app-bg border border-app-border p-3 rounded-lg text-app-text-secondary text-xs">
+                            No buyer connections.
                           </div>
-                        ))}
+                        ) : (
+                          sellerBuyers.map((s, idx) => (
+                            <div key={idx} className="bg-app-bg border border-app-border p-2.5 rounded-lg flex justify-between items-center">
+                              <span className="text-app-text font-medium">{s.name} connected for {s.product}</span>
+                              <span className="text-[9px] text-app-text-secondary">{s.date}</span>
+                            </div>
+                          ))
+                        )}
                       </div>
                     </div>
 
                     <div>
                       <strong className="text-[10px] font-bold text-app-text-secondary uppercase tracking-wider block mb-2">{t("supplierCatalogChanges")}</strong>
                       <div className="space-y-2">
-                        {sellerActivities.updates.map((s, idx) => (
+                        {[
+                          { text: "Catalog sync complete with cloud registry", date: "Just now" }
+                        ].map((s, idx) => (
                           <div key={idx} className="bg-app-bg border border-app-border p-2.5 rounded-lg text-xs">
                             <p className="text-app-text">{s.text}</p>
                             <span className="text-[9px] text-app-text-secondary block text-right mt-1">{s.date}</span>
@@ -541,15 +706,21 @@ export const UserDashboard: React.FC = () => {
                     <div>
                       <strong className="text-[10px] font-bold text-app-text-secondary uppercase tracking-wider block mb-2">{t("catalogOrders")}</strong>
                       <div className="space-y-2">
-                        {sellerActivities.orders.map((s, idx) => (
-                          <div key={idx} className="bg-app-bg border border-app-border p-2.5 rounded-lg flex justify-between items-center text-xs">
-                            <div>
-                              <strong className="text-app-text block">{s.id}</strong>
-                              <span className="text-[10px] text-app-text-secondary">Value: {s.amount}</span>
-                            </div>
-                            <span className="px-2 py-0.5 rounded bg-primary/15 text-primary text-[9px] font-bold">{s.status}</span>
+                        {sellerOrders.length === 0 ? (
+                          <div className="bg-app-bg border border-app-border p-3 rounded-lg text-app-text-secondary text-xs">
+                            No catalog orders.
                           </div>
-                        ))}
+                        ) : (
+                          sellerOrders.map((s, idx) => (
+                            <div key={idx} className="bg-app-bg border border-app-border p-2.5 rounded-lg flex justify-between items-center text-xs">
+                              <div>
+                                <strong className="text-app-text block">{s.id}</strong>
+                                <span className="text-[10px] text-app-text-secondary">Value: {s.amount}</span>
+                              </div>
+                              <span className="px-2 py-0.5 rounded bg-primary/15 text-primary text-[9px] font-bold">{s.status}</span>
+                            </div>
+                          ))
+                        )}
                       </div>
                     </div>
 

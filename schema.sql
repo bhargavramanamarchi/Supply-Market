@@ -36,7 +36,8 @@ CREATE TABLE public.Suppliers (
     rating numeric(3,2) DEFAULT 5.00 NOT NULL CHECK (rating >= 0.00 AND rating <= 5.00),
     trust_score numeric(5,2) DEFAULT 95.00 NOT NULL CHECK (trust_score >= 0.00 AND trust_score <= 100.00),
     contact_number text,
-    business_hours text
+    business_hours text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
 -- 3. Create public.Products table
@@ -50,7 +51,8 @@ CREATE TABLE public.Products (
     unit text NOT NULL,
     price numeric(12,2) NOT NULL DEFAULT 0.00 CHECK (price >= 0.00),
     description text,
-    available boolean DEFAULT true NOT NULL
+    available boolean DEFAULT true NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
 -- 4. Create public.BuyerRequests table
@@ -190,3 +192,83 @@ CREATE POLICY "Allow authenticated user to insert AIRecommendations"
             AND buyer_id = auth.uid()
         )
     );
+
+-- 6. Create public.buyer_follows table
+CREATE TABLE public.buyer_follows (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    buyer_id uuid NOT NULL REFERENCES public.Users(id) ON DELETE CASCADE,
+    supplier_id uuid NOT NULL REFERENCES public.Suppliers(id) ON DELETE CASCADE,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT unique_buyer_supplier UNIQUE (buyer_id, supplier_id)
+);
+
+-- Create Indexes for buyer_follows
+CREATE INDEX IF NOT EXISTS idx_buyer_follows_buyer_id ON public.buyer_follows(buyer_id);
+CREATE INDEX IF NOT EXISTS idx_buyer_follows_supplier_id ON public.buyer_follows(supplier_id);
+
+-- Enable RLS
+ALTER TABLE public.buyer_follows ENABLE ROW LEVEL SECURITY;
+
+-- public.buyer_follows RLS Policies
+CREATE POLICY "Allow buyers to select their own follows" 
+    ON public.buyer_follows FOR SELECT 
+    USING (auth.uid() = buyer_id);
+
+CREATE POLICY "Allow buyers to insert their own follows" 
+    ON public.buyer_follows FOR INSERT 
+    WITH CHECK (auth.uid() = buyer_id);
+
+CREATE POLICY "Allow buyers to delete their own follows" 
+    ON public.buyer_follows FOR DELETE 
+    USING (auth.uid() = buyer_id);
+
+
+-- 7. Create public.buyer_connections table
+CREATE TABLE public.buyer_connections (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    buyer_id uuid NOT NULL REFERENCES public.Users(id) ON DELETE CASCADE,
+    supplier_id uuid NOT NULL REFERENCES public.Suppliers(id) ON DELETE CASCADE,
+    product_id uuid REFERENCES public.Products(id) ON DELETE SET NULL,
+    status text NOT NULL DEFAULT 'Active',
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT unique_buyer_supplier_connection UNIQUE (buyer_id, supplier_id)
+);
+
+-- Create Indexes for buyer_connections
+CREATE INDEX IF NOT EXISTS idx_buyer_connections_buyer_id ON public.buyer_connections(buyer_id);
+CREATE INDEX IF NOT EXISTS idx_buyer_connections_supplier_id ON public.buyer_connections(supplier_id);
+CREATE INDEX IF NOT EXISTS idx_buyer_connections_product_id ON public.buyer_connections(product_id);
+
+-- Enable RLS
+ALTER TABLE public.buyer_connections ENABLE ROW LEVEL SECURITY;
+
+-- public.buyer_connections RLS Policies
+CREATE POLICY "Allow select for buyers and suppliers" 
+    ON public.buyer_connections FOR SELECT 
+    USING (
+        auth.uid() = buyer_id 
+        OR EXISTS (
+            SELECT 1 FROM public.Suppliers 
+            WHERE id = supplier_id 
+            AND user_id = auth.uid()
+        )
+    );
+
+CREATE POLICY "Allow insert for buyers" 
+    ON public.buyer_connections FOR INSERT 
+    WITH CHECK (auth.uid() = buyer_id);
+
+CREATE POLICY "Allow update/delete for buyers and suppliers" 
+    ON public.buyer_connections FOR ALL 
+    USING (
+        auth.uid() = buyer_id 
+        OR EXISTS (
+            SELECT 1 FROM public.Suppliers 
+            WHERE id = supplier_id 
+            AND user_id = auth.uid()
+        )
+    );
+
+
+
+

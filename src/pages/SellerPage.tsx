@@ -19,25 +19,25 @@ import {
   Send
 } from "lucide-react";
 import type { Supplier, Product } from "../services/supplierData";
-import { getSupabaseSuppliers } from "../services/geminiService";
 import { getSpeechRecognition } from "../services/speechService";
 import { useLanguage } from "../context/LanguageContext";
 import { useAuth } from "../hooks/useAuth";
 import { supabase } from "../services/supabase";
+// Reverted workspace imports
+
 
 export const SellerPage: React.FC = () => {
-  const [_suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [currentSeller, setCurrentSeller] = useState<Supplier | null>(null);
   const { language, t } = useLanguage();
   const { user } = useAuth();
-  
+
   const [metrics, setMetrics] = useState({
     products: 0,
     orders: 42,
     customers: 128,
     revenue: "₹1.85 L"
   });
-  
+
   // Floating Sales Assistant Chatbot state
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [chatMessages, setChatMessages] = useState<Array<{ sender: "ai" | "user"; text: string }>>([
@@ -46,6 +46,7 @@ export const SellerPage: React.FC = () => {
       text: t("salesAiWelcome")
     }
   ]);
+
 
   const [customInput, setCustomInput] = useState("");
   const [isThinking, setIsThinking] = useState(false);
@@ -193,27 +194,218 @@ export const SellerPage: React.FC = () => {
     available: true
   });
 
-  // Recent buyer table data
-  const [buyers] = useState([
-    { name: "Verma Food Industries", product: "Premium Turmeric Powder", qty: "150 kg", price: "₹18,000", date: "05 July 2026", status: "Completed" },
-    { name: "Kalyan Catering Services", product: "Superfine Basmati Rice", qty: "200 kg", price: "₹19,000", date: "04 July 2026", status: "Active" },
-    { name: "Reddy Foods Hyderabad", product: "Nellore Sona Masoori Rice", qty: "500 kg", price: "₹27,500", date: "02 July 2026", status: "Completed" },
-  ]);
+  // Recent buyer table data loaded from Supabase
+  const [buyers, setBuyers] = useState<any[]>([]);
 
   // Load seller database
   const loadSellerData = async () => {
     try {
-      const database = await getSupabaseSuppliers();
-      setSuppliers(database);
-      
-      let seller: Supplier | null = null;
-      if (user && user.supplierId) {
-        seller = database.find(s => s.id === user.supplierId) || null;
+      const { data: { user: authUser }, error: authError } = await supabase.auth.getUser();
+      console.log("Authenticated user:", authUser);
+
+      if (authError || !authUser) {
+        console.error("No authenticated user found:", authError);
+        return;
       }
-      if (!seller && database.length > 0) {
-        seller = database[0];
+
+      // Fetch supplier for the current user
+      const { data: supplierData, error: supplierError } = await (supabase as any)
+        .from('suppliers')
+        .select('*')
+        .eq('user_id', authUser.id)
+        .maybeSingle();
+
+      console.log("Supplier record:", supplierData);
+
+      if (supplierError) {
+        console.error("Supplier record fetch error:", supplierError);
       }
-      setCurrentSeller(seller);
+      if (!supplierData) {
+        console.log("No supplier record found for user_id:", authUser.id);
+      }
+
+      let currentSupplierData = supplierData;
+
+      // If missing and user is seller or both, automatically create it
+      if (!currentSupplierData && user && (user.account_type === 'seller' || user.account_type === 'both')) {
+        const cityState = user.city ? (user.state ? `${user.city}, ${user.state}` : user.city) : 'Hyderabad, Telangana';
+        
+        const insertPayload: any = {
+          user_id: authUser.id,
+          company_name: user.company || `${user.name}'s Company`,
+          location: cityState,
+          verified: false,
+          rating: 5.0,
+          trust_score: 95.0,
+          contact_number: user.phone || '+91 90008 90009',
+          business_hours: '09:00 AM - 06:00 PM',
+          created_at: new Date().toISOString()
+        };
+
+        let { data: newSupplier, error: createError } = await (supabase as any)
+          .from('suppliers')
+          .insert(insertPayload)
+          .select()
+          .maybeSingle();
+
+        // If insert fails due to missing created_at column (i.e. migration not run yet), retry without it
+        if (createError && (createError.message?.includes('created_at') || createError.code === '42703')) {
+          console.warn("Inserting supplier with created_at failed, retrying without created_at column:", createError.message);
+          delete insertPayload.created_at;
+          
+          const retryResult = await (supabase as any)
+            .from('suppliers')
+            .insert(insertPayload)
+            .select()
+            .maybeSingle();
+            
+          newSupplier = retryResult.data;
+          createError = retryResult.error;
+        }
+
+        if (createError) throw createError;
+        currentSupplierData = newSupplier;
+      }
+
+      if (currentSupplierData) {
+        console.log("Supplier ID:", currentSupplierData.id);
+
+        // Fetch products for this supplier
+        const { data: productsData, error: productsError } = await (supabase as any)
+          .from('products')
+          .select('*')
+          .eq('supplier_id', currentSupplierData.id);
+
+        if (productsError) throw productsError;
+
+        const products: Product[] = (productsData || []).map((p: any) => ({
+          id: p.id,
+          name: p.product_name,
+          category: p.category,
+          description: p.description || '',
+          price: Number(p.price),
+          unit: p.unit,
+          quantityAvailable: Number(p.quantity),
+          qualityGrade: (p.product_name.toLowerCase().includes('basmati') ? 'Superfine' :
+                        p.product_name.toLowerCase().includes('tmt') ? 'High Grade' :
+                        p.product_name.toLowerCase().includes('uno') ? 'High Grade' :
+                        p.product_name.toLowerCase().includes('shipping') ? 'Standard' : 'Premium') as any,
+          location: currentSupplierData.location,
+          businessName: currentSupplierData.company_name,
+          contactNumber: currentSupplierData.contact_number || '',
+          availability: p.available ? 'Immediate' : 'Within 2 days',
+          businessHours: currentSupplierData.business_hours || '09:00 AM - 06:00 PM'
+        }));
+
+        const supplierInfo: Supplier = {
+          id: currentSupplierData.id,
+          businessName: currentSupplierData.company_name,
+          rating: Number(currentSupplierData.rating),
+          trustScore: Number(currentSupplierData.trust_score),
+          location: currentSupplierData.location,
+          contactNumber: currentSupplierData.contact_number || '',
+          businessHours: currentSupplierData.business_hours || '09:00 AM - 06:00 PM',
+          products: products
+        };
+
+        setCurrentSeller(supplierInfo);
+
+        // Fetch live buyer_connections for this supplier
+        const { data: connData, error: connError } = await (supabase as any)
+          .from('buyer_connections')
+          .select(`
+            id,
+            status,
+            created_at,
+            buyer_id,
+            buyer:users (
+              id,
+              full_name,
+              email
+            ),
+            product:products (
+              id,
+              product_name,
+              price,
+              unit
+            )
+          `)
+          .eq('supplier_id', currentSupplierData.id);
+
+        if (connError) {
+          console.error("Error loading connections for seller:", connError);
+        } else {
+          console.log("Number of buyer_connections returned:", connData?.length || 0);
+          if (!connData || connData.length === 0) {
+            console.log("No buyer_connections found. Query result:", connData);
+          }
+
+          // Fetch buyer requests in parallel to parse quantity demands
+          const buyerIds = (connData || []).map((c: any) => c.buyer_id).filter(Boolean);
+          let requestsData: any[] = [];
+          if (buyerIds.length > 0) {
+            const { data: reqs } = await (supabase as any)
+              .from('buyerrequests')
+              .select('*')
+              .in('buyer_id', buyerIds);
+            requestsData = reqs || [];
+          }
+
+          // Format buyer connections
+          const formattedBuyers = (connData || []).map((c: any) => {
+            const buyerUser = c.buyer;
+            const prod = c.product;
+            if (!buyerUser) return null;
+
+            // Find latest matching buyer request for this buyer
+            const latestReq = requestsData
+              .filter((r: any) => r.buyer_id === buyerUser.id)
+              .sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0];
+
+            let qtyStr = '100 units';
+            let priceStr = 'Contact for pricing';
+
+            if (latestReq) {
+              const requirementText = latestReq.requirement || '';
+              const match = requirementText.match(/(\d+)\s*(kg|tons|bags|cubic feet|pieces|units|bags|pkgs|ton)/i);
+              if (match) {
+                qtyStr = `${match[1]} ${match[2]}`;
+                if (prod) {
+                  const qtyVal = parseFloat(match[1]);
+                  priceStr = `₹${(prod.price * qtyVal).toLocaleString('en-IN')}`;
+                }
+              } else {
+                qtyStr = prod ? `100 ${prod.unit}` : '100 units';
+                if (prod) {
+                  priceStr = `₹${(prod.price * 100).toLocaleString('en-IN')}`;
+                }
+              }
+            } else if (prod) {
+              qtyStr = `100 ${prod.unit}`;
+              priceStr = `₹${(prod.price * 100).toLocaleString('en-IN')}`;
+            }
+
+            return {
+              id: c.id,
+              name: buyerUser.full_name || buyerUser.email,
+              product: prod ? prod.product_name : 'General Sourcing Connection',
+              qty: qtyStr,
+              price: priceStr,
+              date: new Date(c.created_at).toLocaleDateString('en-IN', {
+                day: '2-digit',
+                month: 'long',
+                year: 'numeric'
+              }),
+              status: c.status || 'Active'
+            };
+          }).filter(Boolean);
+
+          setBuyers(formattedBuyers);
+        }
+      } else {
+        setCurrentSeller(null);
+        setBuyers([]);
+      }
     } catch (err) {
       console.error("Error loading seller details:", err);
     }
@@ -223,36 +415,73 @@ export const SellerPage: React.FC = () => {
     loadSellerData();
   }, [user]);
 
+  // Reverted workspace effects
+
+
   // Load metrics dynamically
   useEffect(() => {
     if (!currentSeller) return;
     const fetchMetrics = async () => {
       try {
-        const { data: supplierRecs } = await (supabase as any)
-          .from('airecommendations')
-          .select('id')
-          .eq('supplier_id', currentSeller.id);
+        const isDemoAccount = user && (
+          user.email.endsWith('@supplymarket.com') ||
+          user.id.startsWith('00000000-0000-0000-0000-')
+        );
 
-        const recCount = supplierRecs?.length || 0;
-        const distinctBuyers = 5 + recCount;
-        const avgPrice = currentSeller.products.reduce((acc, p) => acc + p.price, 0) / (currentSeller.products.length || 1);
-        const computedRev = Math.round(recCount * avgPrice * 10 + 25000);
-        const revenueStr = computedRev >= 100000 
-          ? `₹${(computedRev / 100000).toFixed(2)} L` 
-          : `₹${computedRev.toLocaleString('en-IN')}`;
+        if (currentSeller.products.length === 0) {
+          setMetrics({
+            products: 0,
+            orders: 0,
+            customers: 0,
+            revenue: "₹0"
+          });
+        } else if (isDemoAccount) {
+          const { data: supplierRecs } = await (supabase as any)
+            .from('airecommendations')
+            .select('id')
+            .eq('supplier_id', currentSeller.id);
 
-        setMetrics({
-          products: currentSeller.products.length,
-          orders: 12 + recCount,
-          customers: distinctBuyers,
-          revenue: revenueStr
-        });
+          const recCount = supplierRecs?.length || 0;
+          const distinctBuyers = 5 + recCount;
+          const avgPrice = currentSeller.products.reduce((acc, p) => acc + p.price, 0) / (currentSeller.products.length || 1);
+          const computedRev = Math.round(recCount * avgPrice * 10 + 25000);
+          const revenueStr = computedRev >= 100000 
+            ? `₹${(computedRev / 100000).toFixed(2)} L` 
+            : `₹${computedRev.toLocaleString('en-IN')}`;
+
+          setMetrics({
+            products: currentSeller.products.length,
+            orders: 12 + recCount,
+            customers: distinctBuyers,
+            revenue: revenueStr
+          });
+        } else {
+          const { data: supplierRecs } = await (supabase as any)
+            .from('airecommendations')
+            .select('id')
+            .eq('supplier_id', currentSeller.id);
+
+          const leadCount = supplierRecs?.length || 0;
+          const orders = leadCount;
+          const customers = leadCount;
+          const totalRev = leadCount * 12500;
+          const revenueStr = totalRev >= 100000 
+            ? `₹${(totalRev / 100000).toFixed(2)} L` 
+            : `₹${totalRev.toLocaleString('en-IN')}`;
+
+          setMetrics({
+            products: currentSeller.products.length,
+            orders: orders,
+            customers: customers,
+            revenue: revenueStr
+          });
+        }
       } catch (err) {
         console.error("Error fetching supplier metrics:", err);
       }
     };
     fetchMetrics();
-  }, [currentSeller]);
+  }, [currentSeller, user]);
 
   // Open Form triggers
   const handleOpenAdd = () => {
@@ -447,6 +676,10 @@ export const SellerPage: React.FC = () => {
     return insights;
   })();
 
+  // Reverted workspace helpers
+
+
+
   return (
     <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8 bg-app-bg min-h-[calc(100vh-4rem)] transition-colors duration-300">
       
@@ -479,9 +712,8 @@ export const SellerPage: React.FC = () => {
           </div>
         </div>
       </div>
-
-      {/* Main grids */}
       <div className="space-y-8">
+
         
         {/* Core Metrics Cards */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
@@ -569,48 +801,63 @@ export const SellerPage: React.FC = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-app-border">
-                {currentSeller.products.map(p => (
-                  <tr key={p.id} className="hover:bg-app-bg/40 transition-colors">
-                    <td className="px-4 py-3.5">
-                      <div>
-                        <strong className="text-app-text font-bold block">{p.name}</strong>
-                        <span className="text-[11px] text-app-text-secondary">{p.businessName}</span>
-                      </div>
-                    </td>
-                    <td className="px-4 py-3.5 text-app-text-secondary">{p.category}</td>
-                    <td className="px-4 py-3.5 font-bold text-primary">₹{p.price} / {p.unit}</td>
-                    <td className="px-4 py-3.5 text-app-text font-semibold">{p.quantityAvailable.toLocaleString()} {p.unit}</td>
-                    <td className="px-4 py-3.5">
-                      <span className="rounded bg-primary/5 text-primary border border-primary/20 px-2 py-0.5 text-[10px] font-bold">{p.qualityGrade}</span>
-                    </td>
-                    <td className="px-4 py-3.5 text-app-text-secondary">{p.location}</td>
-                    <td className="px-4 py-3.5">
-                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                        p.availability === "Immediate" 
-                          ? "bg-success/10 text-success border border-success/20" 
-                          : "bg-slate-100 text-app-text-secondary border border-slate-200"
-                      }`}>
-                        {p.availability === "Immediate" ? "Yes" : "No"}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3.5 text-right">
-                      <div className="flex justify-end gap-1.5">
-                        <button
-                          onClick={() => handleOpenEdit(p)}
-                          className="p-1 hover:bg-app-bg rounded text-primary cursor-pointer"
-                        >
-                          <Edit3 className="h-4 w-4" />
-                        </button>
-                        <button
-                          onClick={() => handleDeleteProduct(p.id)}
-                          className="p-1 hover:bg-app-bg rounded text-danger cursor-pointer"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </button>
-                      </div>
+                {currentSeller.products.length === 0 ? (
+                  <tr>
+                    <td colSpan={8} className="px-4 py-12 text-center text-app-text-secondary">
+                      <ShoppingBag className="h-8 w-8 text-primary mx-auto mb-2 opacity-50 animate-pulse" />
+                      <p className="font-bold">No products found in your inventory.</p>
+                      <button 
+                        onClick={handleOpenAdd}
+                        className="mt-2 text-xs font-bold text-primary hover:underline cursor-pointer"
+                      >
+                        Add your first product
+                      </button>
                     </td>
                   </tr>
-                ))}
+                ) : (
+                  currentSeller.products.map(p => (
+                    <tr key={p.id} className="hover:bg-app-bg/40 transition-colors">
+                      <td className="px-4 py-3.5">
+                        <div>
+                          <strong className="text-app-text font-bold block">{p.name}</strong>
+                          <span className="text-[11px] text-app-text-secondary">{p.businessName}</span>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3.5 text-app-text-secondary">{p.category}</td>
+                      <td className="px-4 py-3.5 font-bold text-primary">₹{p.price} / {p.unit}</td>
+                      <td className="px-4 py-3.5 text-app-text font-semibold">{p.quantityAvailable.toLocaleString()} {p.unit}</td>
+                      <td className="px-4 py-3.5">
+                        <span className="rounded bg-primary/5 text-primary border border-primary/20 px-2 py-0.5 text-[10px] font-bold">{p.qualityGrade}</span>
+                      </td>
+                      <td className="px-4 py-3.5 text-app-text-secondary">{p.location}</td>
+                      <td className="px-4 py-3.5">
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                          p.availability === "Immediate" 
+                            ? "bg-success/10 text-success border border-success/20" 
+                            : "bg-slate-100 text-app-text-secondary border border-slate-200"
+                        }`}>
+                          {p.availability === "Immediate" ? "Yes" : "No"}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3.5 text-right">
+                        <div className="flex justify-end gap-1.5">
+                          <button
+                            onClick={() => handleOpenEdit(p)}
+                            className="p-1 hover:bg-app-bg rounded text-primary cursor-pointer"
+                          >
+                            <Edit3 className="h-4 w-4" />
+                          </button>
+                          <button
+                            onClick={() => handleDeleteProduct(p.id)}
+                            className="p-1 hover:bg-app-bg rounded text-danger cursor-pointer"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
           </div>
@@ -675,7 +922,6 @@ export const SellerPage: React.FC = () => {
             </table>
           </div>
         </div>
-
       </div>
 
       {/* CRUD Product Modal Dialog Form */}
