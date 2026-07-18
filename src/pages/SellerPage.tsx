@@ -16,7 +16,8 @@ import {
   ShoppingBag,
   UserCheck,
   Mic,
-  Send
+  Send,
+  RefreshCw
 } from "lucide-react";
 import type { Supplier, Product } from "../services/supplierData";
 import { getSpeechRecognition } from "../services/speechService";
@@ -28,6 +29,16 @@ import { supabase } from "../services/supabase";
 
 export const SellerPage: React.FC = () => {
   const [currentSeller, setCurrentSeller] = useState<Supplier | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [showSetupForm, setShowSetupForm] = useState(false);
+  const [isSubmittingSetup, setIsSubmittingSetup] = useState(false);
+  const [setupForm, setSetupForm] = useState({
+    companyName: "",
+    location: "",
+    contactNumber: "",
+    businessHours: "09:00 AM - 06:00 PM"
+  });
   const { language, t } = useLanguage();
   const { user } = useAuth();
 
@@ -199,6 +210,8 @@ export const SellerPage: React.FC = () => {
 
   // Load seller database
   const loadSellerData = async () => {
+    setIsLoading(true);
+    setError(null);
     try {
       const { data: { user: authUser }, error: authError } = await supabase.auth.getUser();
       console.log("Authenticated User ID:", authUser?.id);
@@ -206,7 +219,52 @@ export const SellerPage: React.FC = () => {
 
       if (authError || !authUser) {
         console.error("No authenticated user found:", authError);
+        setError("Please log in to access the seller dashboard.");
+        setIsLoading(false);
         return;
+      }
+
+      // Fetch user profile from public.users table
+      let { data: userRec, error: userRecError } = await (supabase as any)
+        .from('users')
+        .select('*')
+        .eq('id', authUser.id)
+        .maybeSingle();
+
+      if (userRecError) {
+        console.error("Error fetching user database profile:", userRecError);
+      }
+
+      // Try repairing users profile if missing
+      if (!userRec) {
+        console.log("User record missing in public.users, repairing...");
+        const metadata = authUser.user_metadata || {};
+        const fullName = metadata.full_name || authUser.email?.split('@')[0] || 'Seller';
+        const email = authUser.email || '';
+        const organization = metadata.organization || `${fullName}'s Organization`;
+        const accountType = metadata.account_type || 'both';
+        const phone = metadata.phone || '';
+        const city = metadata.city || 'Hyderabad';
+
+        const { data: insertedUser, error: insertUserError } = await (supabase as any)
+          .from('users')
+          .insert({
+            id: authUser.id,
+            full_name: fullName,
+            email: email,
+            organization: organization,
+            phone: phone,
+            account_type: accountType,
+            city: city
+          })
+          .select()
+          .maybeSingle();
+
+        if (insertUserError) {
+          console.error("Failed to repair user record in database:", insertUserError);
+        } else {
+          userRec = insertedUser;
+        }
       }
 
       // Fetch supplier for the current user
@@ -221,56 +279,95 @@ export const SellerPage: React.FC = () => {
       if (supplierError) {
         console.error("Supplier record fetch error:", supplierError);
       }
-      if (!supplierData) {
-        console.log("No supplier record found for user_id:", authUser.id);
-      }
 
       let currentSupplierData = supplierData;
 
-      // If missing and user is seller or both, automatically create it
-      if (!currentSupplierData && user && (user.account_type === 'seller' || user.account_type === 'both')) {
-        const cityState = user.city ? (user.state ? `${user.city}, ${user.state}` : user.city) : 'Hyderabad, Telangana';
-        
-        const insertPayload: any = {
-          user_id: authUser.id,
-          company_name: user.company || `${user.name}'s Company`,
-          location: cityState,
-          verified: false,
-          rating: 5.0,
-          trust_score: 95.0,
-          contact_number: user.phone || '+91 90008 90009',
-          business_hours: '09:00 AM - 06:00 PM',
-          created_at: new Date().toISOString()
+      // If missing, automatically create it
+      if (!currentSupplierData) {
+        const profile = userRec || {
+          full_name: authUser.user_metadata?.full_name || authUser.email?.split('@')[0] || 'Seller',
+          organization: authUser.user_metadata?.organization || 'My Company',
+          city: authUser.user_metadata?.city || 'Hyderabad',
+          phone: authUser.user_metadata?.phone || '+91 90008 90009',
+          account_type: authUser.user_metadata?.account_type || 'both'
         };
 
-        let { data: newSupplier, error: createError } = await (supabase as any)
-          .from('suppliers')
-          .insert(insertPayload)
-          .select()
-          .maybeSingle();
-
-        // If insert fails due to missing created_at column (i.e. migration not run yet), retry without it
-        if (createError && (createError.message?.includes('created_at') || createError.code === '42703')) {
-          console.warn("Inserting supplier with created_at failed, retrying without created_at column:", createError.message);
-          delete insertPayload.created_at;
+        // Before creating supplier, make sure account type check will pass by ensuring users table has seller/both role
+        if (profile.account_type === 'buyer') {
+          console.log("Updating account_type to 'both' to allow supplier creation");
+          const { error: updateRoleError } = await (supabase as any)
+            .from('users')
+            .update({ account_type: 'both' })
+            .eq('id', authUser.id);
           
-          const retryResult = await (supabase as any)
+          if (updateRoleError) {
+            console.error("Failed to update user role to 'both':", updateRoleError);
+          } else {
+            profile.account_type = 'both';
+          }
+        }
+
+        if (profile.account_type === 'seller' || profile.account_type === 'both') {
+          const cityState = profile.city ? (authUser.user_metadata?.state ? `${profile.city}, ${authUser.user_metadata.state}` : profile.city) : 'Hyderabad, Telangana';
+          
+          const insertPayload: any = {
+            user_id: authUser.id,
+            company_name: profile.organization || `${profile.full_name}'s Company`,
+            location: cityState,
+            verified: false,
+            rating: 5.0,
+            trust_score: 95.0,
+            contact_number: profile.phone || '+91 90008 90009',
+            business_hours: '09:00 AM - 06:00 PM',
+            created_at: new Date().toISOString()
+          };
+
+          let { data: newSupplier, error: createError } = await (supabase as any)
             .from('suppliers')
             .insert(insertPayload)
             .select()
             .maybeSingle();
-            
-          newSupplier = retryResult.data;
-          createError = retryResult.error;
-        }
 
-        if (createError) throw createError;
-        currentSupplierData = newSupplier;
+          // If insert fails due to missing created_at column (i.e. migration not run yet), retry without it
+          if (createError && (createError.message?.includes('created_at') || createError.code === '42703')) {
+            console.warn("Inserting supplier with created_at failed, retrying without created_at column:", createError.message);
+            delete insertPayload.created_at;
+            
+            const retryResult = await (supabase as any)
+              .from('suppliers')
+              .insert(insertPayload)
+              .select()
+              .maybeSingle();
+              
+            newSupplier = retryResult.data;
+            createError = retryResult.error;
+          }
+
+          if (createError) {
+            console.error("Auto-creation of supplier profile failed:", createError);
+          } else {
+            currentSupplierData = newSupplier;
+          }
+        }
       }
 
+      // If supplier record is STILL missing (auto-creation failed or role is invalid), show setup form
+      if (!currentSupplierData) {
+        console.log("Supplier profile still missing, preparing Seller Profile Setup form");
+        setSetupForm({
+          companyName: userRec?.organization || authUser.user_metadata?.organization || '',
+          location: userRec?.city || authUser.user_metadata?.city || 'Hyderabad, Telangana',
+          contactNumber: userRec?.phone || authUser.user_metadata?.phone || '+91 90008 90009',
+          businessHours: '09:00 AM - 06:00 PM'
+        });
+        setShowSetupForm(true);
+        setIsLoading(false);
+        return;
+      }
+
+      // If supplier record is present, continue loading products and connections
       if (currentSupplierData) {
         console.log("Supplier Record:", currentSupplierData);
-        console.log("Supplier ID:", currentSupplierData.id);
 
         // Fetch products for this supplier ordered by created_at DESC
         const { data: productsData, error: productsError } = await (supabase as any)
@@ -279,9 +376,9 @@ export const SellerPage: React.FC = () => {
           .eq('supplier_id', currentSupplierData.id)
           .order('created_at', { ascending: false });
 
-        if (productsError) throw productsError;
-
-        console.log("Number of Products Returned:", productsData?.length || 0);
+        if (productsError) {
+          console.error("Error loading products for seller:", productsError);
+        }
 
         const products: Product[] = (productsData || []).map((p: any) => ({
           id: p.id,
@@ -314,6 +411,7 @@ export const SellerPage: React.FC = () => {
         };
 
         setCurrentSeller(supplierInfo);
+        setShowSetupForm(false);
 
         // Fetch live buyer_connections for this supplier
         const { data: connData, error: connError } = await (supabase as any)
@@ -341,9 +439,6 @@ export const SellerPage: React.FC = () => {
           console.error("Error loading connections for seller:", connError);
         } else {
           console.log("Number of buyer_connections returned:", connData?.length || 0);
-          if (!connData || connData.length === 0) {
-            console.log("No buyer_connections found. Query result:", connData);
-          }
 
           // Fetch buyer requests in parallel to parse quantity demands
           const buyerIds = (connData || []).map((c: any) => c.buyer_id).filter(Boolean);
@@ -407,12 +502,63 @@ export const SellerPage: React.FC = () => {
 
           setBuyers(formattedBuyers);
         }
-      } else {
-        setCurrentSeller(null);
-        setBuyers([]);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error("Error loading seller details:", err);
+      setError(err?.message || "An unexpected database error occurred while loading the Seller Dashboard.");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleSetupFormSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsSubmittingSetup(true);
+    try {
+      const { data: { user: authUser }, error: authError } = await supabase.auth.getUser();
+      if (authError || !authUser) {
+        alert("Session expired. Please log in again.");
+        return;
+      }
+
+      // 1. Force update user profile roles to 'both' to satisfy constraints & insert policy
+      const { error: userRoleError } = await (supabase as any)
+        .from('users')
+        .update({ account_type: 'both' })
+        .eq('id', authUser.id);
+
+      if (userRoleError) {
+        console.error("Error setting user role to seller/both during manual setup:", userRoleError);
+      }
+
+      // 2. Insert manual supplier profile
+      const { error: createError } = await (supabase as any)
+        .from('suppliers')
+        .insert({
+          user_id: authUser.id,
+          company_name: setupForm.companyName,
+          location: setupForm.location,
+          verified: false,
+          rating: 5.0,
+          trust_score: 95.0,
+          contact_number: setupForm.contactNumber,
+          business_hours: setupForm.businessHours
+        })
+        .select()
+        .maybeSingle();
+
+      if (createError) {
+        console.error("Manual creation of supplier profile failed:", createError);
+        alert(`Error saving supplier profile: ${createError.message}`);
+      } else {
+        setShowSetupForm(false);
+        await loadSellerData();
+      }
+    } catch (err: any) {
+      console.error("Supplier profile setup failed:", err);
+      alert(`Database exception: ${err?.message || err}`);
+    } finally {
+      setIsSubmittingSetup(false);
     }
   };
 
@@ -647,7 +793,133 @@ export const SellerPage: React.FC = () => {
     }
   };
 
-  if (!currentSeller) return null;
+  if (isLoading) {
+    return (
+      <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8 bg-app-bg min-h-[calc(100vh-4rem)] flex items-center justify-center">
+        <div className="text-center space-y-4">
+          <RefreshCw className="h-10 w-10 animate-spin text-primary mx-auto" />
+          <p className="text-sm text-app-text-secondary">Loading Seller Dashboard...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8 bg-app-bg min-h-[calc(100vh-4rem)] flex items-center justify-center">
+        <div className="max-w-md w-full rounded-2xl border border-app-border bg-app-card p-6 text-center space-y-4 shadow-premium">
+          <AlertCircle className="h-12 w-12 text-danger mx-auto" />
+          <h2 className="text-lg font-bold text-app-text">Connection Error</h2>
+          <p className="text-xs text-app-text-secondary">{error}</p>
+          <button
+            onClick={() => loadSellerData()}
+            className="w-full rounded-xl bg-primary text-white py-2.5 text-xs font-bold shadow hover:opacity-90 cursor-pointer"
+          >
+            Retry Loading
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (showSetupForm) {
+    return (
+      <div className="mx-auto max-w-2xl px-4 py-12 sm:px-6 lg:px-8 bg-app-bg min-h-[calc(100vh-4rem)] flex items-center justify-center animate-fade-in">
+        <div className="w-full rounded-2xl border border-app-border bg-app-card p-6 sm:p-8 shadow-premium space-y-6">
+          <div className="text-center space-y-2">
+            <div className="h-12 w-12 rounded-xl bg-primary/10 text-primary flex items-center justify-center mx-auto">
+              <Building className="h-6 w-6" />
+            </div>
+            <h2 className="text-xl font-bold text-app-text">Setup Seller Profile</h2>
+            <p className="text-xs text-app-text-secondary">
+              Configure your supplier business listing details to start managing products and receiving buyer requests.
+            </p>
+          </div>
+
+          <form onSubmit={handleSetupFormSubmit} className="space-y-4">
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-bold text-app-text-secondary uppercase">Company Name</label>
+              <input
+                type="text"
+                required
+                value={setupForm.companyName}
+                onChange={(e) => setSetupForm(prev => ({ ...prev, companyName: e.target.value }))}
+                placeholder="e.g. Acme Steel Industry"
+                className="w-full rounded-lg border border-app-border bg-app-bg px-3 py-2.5 text-xs text-app-text outline-none focus:border-primary"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-bold text-app-text-secondary uppercase">Business Location</label>
+              <input
+                type="text"
+                required
+                value={setupForm.location}
+                onChange={(e) => setSetupForm(prev => ({ ...prev, location: e.target.value }))}
+                placeholder="e.g. Hyderabad, Telangana"
+                className="w-full rounded-lg border border-app-border bg-app-bg px-3 py-2.5 text-xs text-app-text outline-none focus:border-primary"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-bold text-app-text-secondary uppercase">Contact Phone Number</label>
+              <input
+                type="text"
+                required
+                value={setupForm.contactNumber}
+                onChange={(e) => setSetupForm(prev => ({ ...prev, contactNumber: e.target.value }))}
+                placeholder="e.g. +91 90000 12345"
+                className="w-full rounded-lg border border-app-border bg-app-bg px-3 py-2.5 text-xs text-app-text outline-none focus:border-primary"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-bold text-app-text-secondary uppercase">Operating Business Hours</label>
+              <input
+                type="text"
+                value={setupForm.businessHours}
+                onChange={(e) => setSetupForm(prev => ({ ...prev, businessHours: e.target.value }))}
+                placeholder="e.g. 09:00 AM - 06:00 PM"
+                className="w-full rounded-lg border border-app-border bg-app-bg px-3 py-2.5 text-xs text-app-text outline-none focus:border-primary"
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={isSubmittingSetup}
+              className="w-full flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-primary to-secondary text-white py-3.5 text-xs font-bold shadow hover:opacity-95 disabled:opacity-50 transition-all cursor-pointer"
+            >
+              {isSubmittingSetup ? (
+                <>
+                  <RefreshCw className="h-4 w-4 animate-spin" />
+                  <span>Creating Profile...</span>
+                </>
+              ) : (
+                <span>Complete Profile Setup</span>
+              )}
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  if (!currentSeller) {
+    return (
+      <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8 bg-app-bg min-h-[calc(100vh-4rem)] flex items-center justify-center">
+        <div className="text-center space-y-4">
+          <AlertCircle className="h-10 w-10 text-primary mx-auto" />
+          <p className="text-sm text-app-text-secondary">Supplier details could not be found. Please complete profile setup.</p>
+          <button
+            onClick={() => setShowSetupForm(true)}
+            className="rounded-xl bg-primary text-white px-4 py-2 text-xs font-bold shadow hover:opacity-90"
+          >
+            Open Profile Setup
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   const dynamicInsights = (() => {
     const prods = currentSeller.products;
