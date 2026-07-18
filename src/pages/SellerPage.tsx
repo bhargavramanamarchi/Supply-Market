@@ -201,6 +201,7 @@ export const SellerPage: React.FC = () => {
   const loadSellerData = async () => {
     try {
       const { data: { user: authUser }, error: authError } = await supabase.auth.getUser();
+      console.log("Authenticated User ID:", authUser?.id);
       console.log("Authenticated user:", authUser);
 
       if (authError || !authUser) {
@@ -268,15 +269,19 @@ export const SellerPage: React.FC = () => {
       }
 
       if (currentSupplierData) {
+        console.log("Supplier Record:", currentSupplierData);
         console.log("Supplier ID:", currentSupplierData.id);
 
-        // Fetch products for this supplier
+        // Fetch products for this supplier ordered by created_at DESC
         const { data: productsData, error: productsError } = await (supabase as any)
           .from('products')
           .select('*')
-          .eq('supplier_id', currentSupplierData.id);
+          .eq('supplier_id', currentSupplierData.id)
+          .order('created_at', { ascending: false });
 
         if (productsError) throw productsError;
+
+        console.log("Number of Products Returned:", productsData?.length || 0);
 
         const products: Product[] = (productsData || []).map((p: any) => ({
           id: p.id,
@@ -521,7 +526,6 @@ export const SellerPage: React.FC = () => {
 
   const handleFormSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!currentSeller) return;
 
     const unitType = formData.category === "Steel" 
       ? "ton" 
@@ -532,41 +536,94 @@ export const SellerPage: React.FC = () => {
           : "kg";
 
     try {
+      // 1. Get the authenticated user
+      const { data: { user: authUser }, error: authError } = await supabase.auth.getUser();
+      console.log("Authenticated user:", authUser);
+
+      if (authError || !authUser) {
+        console.error("No authenticated user found:", authError);
+        alert("Please log in to add products.");
+        return;
+      }
+
+      // 2. Find the seller's supplier record
+      const { data: supplierData, error: supplierError } = await (supabase as any)
+        .from('suppliers')
+        .select('*')
+        .eq('user_id', authUser.id)
+        .maybeSingle();
+
+      console.log("Supplier record:", supplierData);
+
+      if (supplierError || !supplierData) {
+        console.error("Supplier record fetch failed or not found:", supplierError || "No supplier record");
+        alert("Error: Supplier profile not found. Please register as a seller first.");
+        return;
+      }
+
+      const supplierId = supplierData.id;
+
       if (formMode === "add") {
-        const { error } = await (supabase as any)
-          .from('products')
-          .insert({
-            supplier_id: currentSeller.id,
-            product_name: formData.name,
-            category: formData.category,
-            quantity: Number(formData.quantityAvailable),
-            unit: unitType,
-            price: Number(formData.price),
-            description: `Premium grade bulk wholesale sourcing of ${formData.name}.`,
-            available: formData.available
-          });
+        // 4. Insert into public.products
+        const insertPayload = {
+          supplier_id: supplierId,
+          product_name: formData.name,
+          category: formData.category,
+          quantity: Number(formData.quantityAvailable),
+          unit: unitType,
+          price: Number(formData.price),
+          description: `Premium grade bulk wholesale sourcing of ${formData.name}.`,
+          available: formData.available,
+          created_at: new Date().toISOString()
+        };
 
-        if (error) throw error;
+        console.log("Insert payload:", insertPayload);
+
+        const { data: insertedRow, error: insertError } = await (supabase as any)
+          .from('products')
+          .insert(insertPayload)
+          .select();
+
+        console.log("Inserted row:", insertedRow);
+        console.log("Supabase error (if any):", insertError);
+
+        if (insertError) {
+          console.error("Supabase insert product failed:", insertError.code, insertError.message, insertError.details);
+          alert(`Error saving product: ${insertError.message}`);
+          throw insertError;
+        }
       } else if (formMode === "edit" && activeProdId) {
-        const { error } = await (supabase as any)
-          .from('products')
-          .update({
-            product_name: formData.name,
-            category: formData.category,
-            quantity: Number(formData.quantityAvailable),
-            unit: unitType,
-            price: Number(formData.price),
-            available: formData.available
-          })
-          .eq('id', activeProdId);
+        const updatePayload = {
+          product_name: formData.name,
+          category: formData.category,
+          quantity: Number(formData.quantityAvailable),
+          unit: unitType,
+          price: Number(formData.price),
+          available: formData.available
+        };
 
-        if (error) throw error;
+        console.log("Update payload:", updatePayload);
+
+        const { data: updatedRow, error: updateError } = await (supabase as any)
+          .from('products')
+          .update(updatePayload)
+          .eq('id', activeProdId)
+          .select();
+
+        console.log("Updated row:", updatedRow);
+        console.log("Supabase error (if any):", updateError);
+
+        if (updateError) {
+          console.error("Supabase update product failed:", updateError.code, updateError.message, updateError.details);
+          alert(`Error updating product: ${updateError.message}`);
+          throw updateError;
+        }
       }
       
+      // 5. Refresh the product list directly from Supabase
       await loadSellerData();
     } catch (err) {
       console.error("Product submit failed:", err);
-      alert("Database error: Unable to save product.");
     }
 
     setShowForm(false);

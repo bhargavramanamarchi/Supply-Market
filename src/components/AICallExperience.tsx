@@ -60,11 +60,6 @@ export const AICallExperience: React.FC<AICallExperienceProps> = ({
   const [isSpeakerActive, setIsSpeakerActive] = useState(true);
   const [showDetails, setShowDetails] = useState(false);
 
-  // Suppress rendering if the window width is desktop (>= 1024px)
-  if (window.innerWidth >= 1024) {
-    return null;
-  }
-
   // Handle phone ringing audio state
   useEffect(() => {
     if (!isAccepted) {
@@ -76,6 +71,11 @@ export const AICallExperience: React.FC<AICallExperienceProps> = ({
       stopPhoneRing();
     };
   }, [isAccepted]);
+
+  // Suppress rendering if the window width is desktop (>= 1024px)
+  if (window.innerWidth >= 1024) {
+    return null;
+  }
 
   const handleAccept = () => {
     setIsAccepted(true);

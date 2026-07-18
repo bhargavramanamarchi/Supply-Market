@@ -12,19 +12,19 @@ export const getSupabaseSuppliers = async (): Promise<Supplier[]> => {
       .from('suppliers')
       .select('*')
       .order('created_at', { ascending: false });
-    
+
     dbSuppliers = result.data;
     supError = result.error;
 
     // If sorting by created_at fails (e.g., column does not exist on live DB), fall back to id
     if (supError) {
       console.warn("Sorting by created_at failed, falling back to id ordering. Error details:", supError.message);
-      
+
       const fallbackResult = await (supabase as any)
         .from('suppliers')
         .select('*')
         .order('id', { ascending: false });
-      
+
       dbSuppliers = fallbackResult.data;
       supError = fallbackResult.error;
     }
@@ -39,45 +39,131 @@ export const getSupabaseSuppliers = async (): Promise<Supplier[]> => {
       throw supError;
     }
 
-    const { data: dbProducts, error: prodError } = await (supabase as any)
-      .from('products')
-      .select('*');
-    if (prodError) throw prodError;
+    let dbProducts = null;
+    let prodError = null;
 
-    const mapped: Supplier[] = (dbSuppliers as any[] || []).map((sup: any) => {
-      const supProds = (dbProducts as any[] || []).filter((p: any) => p.supplier_id === sup.id);
-      const products = supProds.map((p: any) => ({
-        id: p.id,
-        name: p.product_name,
-        category: p.category,
-        description: p.description || '',
-        price: Number(p.price),
-        unit: p.unit,
-        quantityAvailable: Number(p.quantity),
-        qualityGrade: (p.product_name.toLowerCase().includes('basmati') ? 'Superfine' :
-                      p.product_name.toLowerCase().includes('tmt') ? 'High Grade' :
-                      p.product_name.toLowerCase().includes('uno') ? 'High Grade' :
-                      p.product_name.toLowerCase().includes('shipping') ? 'Standard' : 'Premium') as any,
-        location: sup.location,
-        businessName: sup.company_name,
-        contactNumber: sup.contact_number || '',
-        availability: p.available ? "Immediate" : "Within 2 days",
-        businessHours: sup.business_hours || '09:00 AM - 06:00 PM'
-      }));
+    try {
+      const prodResult = await (supabase as any)
+        .from('products')
+        .select('*')
+        .order('created_at', { ascending: false });
 
-      return {
-        id: sup.id,
-        businessName: sup.company_name,
-        rating: Number(sup.rating),
-        trustScore: (sup as any).trust_score ? Number((sup as any).trust_score) : 95,
-        location: sup.location,
-        contactNumber: sup.contact_number || '',
-        businessHours: sup.business_hours || '09:00 AM - 06:00 PM',
-        products
-      };
+      dbProducts = prodResult.data;
+      prodError = prodResult.error;
+    } catch (err: any) {
+      prodError = err;
+    }
+
+    if (prodError) {
+      console.error("Products query failed!");
+      console.error("error.code:", prodError.code);
+      console.error("error.message:", prodError.message);
+      console.error("error.details:", prodError.details);
+      console.error("error.hint:", prodError.hint);
+
+      // Fallback: If created_at is missing, order by id DESC
+      const isCreatedAtMissing = prodError.code === '42703' || prodError.message?.includes('created_at');
+      if (isCreatedAtMissing) {
+        console.log("created_at column missing on products table, falling back to id sorting...");
+        const fallbackResult = await (supabase as any)
+          .from('products')
+          .select('*')
+          .order('id', { ascending: false });
+
+        dbProducts = fallbackResult.data;
+        prodError = fallbackResult.error;
+
+        if (prodError) {
+          console.error("Fallback products query failed!");
+          console.error("error.code:", prodError.code);
+          console.error("error.message:", prodError.message);
+          console.error("error.details:", prodError.details);
+          console.error("error.hint:", prodError.hint);
+        }
+      }
+    }
+
+    if (prodError || !dbProducts) {
+      console.error("Failed to load products, using empty list to prevent crash.");
+      dbProducts = [];
+    }
+
+    const supplierMap = new Map<string, Supplier>();
+    const orderedSuppliers: Supplier[] = [];
+
+    // First map all suppliers to their properties for easy lookup
+    const allSuppliersMap = new Map<string, any>();
+    (dbSuppliers || []).forEach((sup: any) => {
+      allSuppliersMap.set(sup.id, sup);
     });
 
-    return mapped;
+    // Group products by supplier, preserving the product order (which is sorted by created_at DESC or id DESC)
+    const supplierProductsMap = new Map<string, any[]>();
+    dbProducts.forEach((p: any) => {
+      const list = supplierProductsMap.get(p.supplier_id) || [];
+      list.push(p);
+      supplierProductsMap.set(p.supplier_id, list);
+    });
+
+    // Now, iterate through the sorted products to order the suppliers
+    dbProducts.forEach((p: any) => {
+      const sup = allSuppliersMap.get(p.supplier_id);
+      if (sup && !supplierMap.has(sup.id)) {
+        const rawProds = supplierProductsMap.get(sup.id) || [];
+        const products = rawProds.map((prod: any) => ({
+          id: prod.id,
+          name: prod.product_name,
+          category: prod.category,
+          description: prod.description || '',
+          price: Number(prod.price),
+          unit: prod.unit,
+          quantityAvailable: Number(prod.quantity),
+          qualityGrade: (prod.product_name.toLowerCase().includes('basmati') ? 'Superfine' :
+            prod.product_name.toLowerCase().includes('tmt') ? 'High Grade' :
+              prod.product_name.toLowerCase().includes('uno') ? 'High Grade' :
+                prod.product_name.toLowerCase().includes('shipping') ? 'Standard' : 'Premium') as any,
+          location: sup.location,
+          businessName: sup.company_name,
+          contactNumber: sup.contact_number || '',
+          availability: prod.available ? "Immediate" : "Within 2 days",
+          businessHours: sup.business_hours || '09:00 AM - 06:00 PM'
+        }));
+
+        const supplierInfo: Supplier = {
+          id: sup.id,
+          businessName: sup.company_name,
+          rating: Number(sup.rating),
+          trustScore: sup.trust_score ? Number(sup.trust_score) : 95,
+          location: sup.location,
+          contactNumber: sup.contact_number || '',
+          businessHours: sup.business_hours || '09:00 AM - 06:00 PM',
+          products
+        };
+
+        supplierMap.set(sup.id, supplierInfo);
+        orderedSuppliers.push(supplierInfo);
+      }
+    });
+
+    // Append any suppliers who don't have any products at the end
+    (dbSuppliers || []).forEach((sup: any) => {
+      if (!supplierMap.has(sup.id)) {
+        const supplierInfo: Supplier = {
+          id: sup.id,
+          businessName: sup.company_name,
+          rating: Number(sup.rating),
+          trustScore: sup.trust_score ? Number(sup.trust_score) : 95,
+          location: sup.location,
+          contactNumber: sup.contact_number || '',
+          businessHours: sup.business_hours || '09:00 AM - 06:00 PM',
+          products: []
+        };
+        supplierMap.set(sup.id, supplierInfo);
+        orderedSuppliers.push(supplierInfo);
+      }
+    });
+
+    return orderedSuppliers;
   } catch (err) {
     console.error("Error fetching suppliers from Supabase:", err);
     return [];
@@ -224,7 +310,7 @@ const getGeminiAIClient = (): GoogleGenerativeAI => {
 export const matchSuppliersAI = async (query: string, lang: string = "English"): Promise<MatchResult> => {
   try {
     const genAI = getGeminiAIClient();
-    
+
     // 1. Structured JSON extraction prompt
     const extractionPrompt = `You are a professional buyer sourcing agent. Analyze the following buyer request and extract the parameters:
 Request: "${query}"
@@ -247,7 +333,7 @@ You must return a valid JSON object matching the following structure:
 Return ONLY valid JSON. Do not include markdown formatting or extra dialogue.`;
 
     const model = genAI.getGenerativeModel({
-      model: "gemini-1.5-flash",
+      model: "gemini-2.5-flash-lite",
       generationConfig: {
         responseMimeType: "application/json"
       }
@@ -286,7 +372,7 @@ Return ONLY valid JSON. Do not include markdown formatting or extra dialogue.`;
       };
 
       const followupMsg = extracted.followup || "I couldn't understand the product you need. Could you please tell me the product name and quantity?";
-      
+
       return {
         bestSupplier: mockSupplier,
         bestProduct: mockProduct,
@@ -380,7 +466,7 @@ Return ONLY valid JSON. Do not include markdown formatting or extra dialogue.`;
         // Filter out completely non-matching categories to keep matches accurate
         const isCatMatch = extracted.category && product.category.toLowerCase() === extracted.category.toLowerCase();
         const isNameMatch = extracted.product && product.name.toLowerCase().includes(extracted.product.toLowerCase());
-        
+
         if (isCatMatch || isNameMatch) {
           matches.push({
             supplier,
@@ -817,7 +903,7 @@ Return ONLY valid JSON. Do not write markdown tags like \`\`\`json or extra conv
 
     const result = await model.generateContent(prompt);
     const responseText = result.response.text().trim();
-    
+
     let cleaned = responseText;
     if (cleaned.startsWith("```json")) {
       cleaned = cleaned.substring(7);
@@ -826,9 +912,9 @@ Return ONLY valid JSON. Do not write markdown tags like \`\`\`json or extra conv
       cleaned = cleaned.substring(0, cleaned.length - 3);
     }
     cleaned = cleaned.trim();
-    
+
     const report: SalesCoachReport = JSON.parse(cleaned);
-    
+
     // Validate fields
     if (typeof report.chanceOfClosing !== "number") {
       report.chanceOfClosing = Number(report.chanceOfClosing) || 75;
@@ -837,10 +923,10 @@ Return ONLY valid JSON. Do not write markdown tags like \`\`\`json or extra conv
   } catch (err) {
     console.warn("Gemini Sales Coach analysis failed, using fallback metrics:", err);
     // Provide intelligent generic fallbacks based on parameters
-    const discountVal = quantity.toLowerCase().includes("kg") || Number(quantity.replace(/[^0-9]/g, "")) > 100 
-      ? "5% bulk discount" 
+    const discountVal = quantity.toLowerCase().includes("kg") || Number(quantity.replace(/[^0-9]/g, "")) > 100
+      ? "5% bulk discount"
       : "Standard pricing, no immediate discount needed";
-      
+
     return {
       buyerBehaviour: "Professional and focused on category parameters.",
       buyerIntent: "Active searcher comparing catalog matching results.",
@@ -871,12 +957,12 @@ export const discussSourcingSession = async (
 
     // Construct suppliers list for context
     const suppliersContext = matchedSuppliers.map((s, idx) => {
-      const prodsStr = s.products.map(p => 
+      const prodsStr = s.products.map(p =>
         `- Product: "${p.name}" (Price: ₹${p.price}/${p.unit}, Stock: ${p.quantityAvailable} ${p.unit}, Quality: ${p.qualityGrade}, Availability: ${p.availability})`
       ).join("\n");
       const matchScore = allMatches.find(m => m.supplier.id === s.id)?.score || 80;
 
-      return `Supplier #${idx+1}: "${s.businessName}"
+      return `Supplier #${idx + 1}: "${s.businessName}"
 Rating: ${s.rating} Stars
 Trust Score: ${s.trustScore}%
 Location: "${s.location}"
@@ -885,7 +971,7 @@ Matched Products:
 ${prodsStr}`;
     }).join("\n\n");
 
-    const historyStr = conversationHistory.map(m => 
+    const historyStr = conversationHistory.map(m =>
       `${m.role === 'user' ? 'Buyer' : 'Procurement Assistant'}: ${m.text}`
     ).join("\n");
 
@@ -923,7 +1009,7 @@ Your response:`;
     // Generic local heuristics fallback based on query
     const lower = query.toLowerCase();
     if (lower.includes("cheap") || lower.includes("price") || lower.includes("cost") || lower.includes("ధర") || lower.includes("कीमत")) {
-      const sorted = [...matchedSuppliers].sort((a,b) => {
+      const sorted = [...matchedSuppliers].sort((a, b) => {
         const p1 = a.products[0]?.price || 999999;
         const p2 = b.products[0]?.price || 999999;
         return p1 - p2;
@@ -941,8 +1027,149 @@ Your response:`;
     if (lower.includes("close") || lower.includes("near") || lower.includes("location")) {
       return `I recommend checking the location parameters of the matched suppliers. Many are located in close freight regions for fast transit.`;
     }
-    
+
     return `I can help you review the matched suppliers list. Please ask me about price comparison, fast logistics, or closing negotiations with ${matchedSuppliers[0]?.businessName || "the recommended supplier"}.`;
   }
 };
+
+export interface ExtractedRequirement {
+  product: string | null;
+  quantity: string | null;
+  location: string | null;
+  budget: string | null;
+  quality: string | null;
+  deliveryTime: string | null;
+}
+
+const localAnalyzeSourcingRequirement = (query: string): ExtractedRequirement => {
+  const normalized = query.toLowerCase();
+  
+  // 1. Detect product
+  let product: string | null = null;
+  if (normalized.includes("teak wood") || normalized.includes("teakwood")) {
+    product = "Teak Wood";
+  } else if (normalized.includes("wood") || normalized.includes("timber")) {
+    product = "Wood";
+  } else if (normalized.includes("turmeric") || normalized.includes("haldi")) {
+    product = "Turmeric";
+  } else if (normalized.includes("basmati rice") || normalized.includes("basmati")) {
+    product = "Basmati Rice";
+  } else if (normalized.includes("rice")) {
+    product = "Rice";
+  } else if (normalized.includes("steel") || normalized.includes("rebar")) {
+    product = "Steel";
+  } else if (normalized.includes("cement")) {
+    product = "Cement";
+  } else if (normalized.includes("packaging") || normalized.includes("box") || normalized.includes("carton")) {
+    product = "Packaging";
+  } else if (normalized.includes("cotton")) {
+    product = "Cotton";
+  } else if (normalized.includes("electronics") || normalized.includes("arduino") || normalized.includes("sensor")) {
+    product = "Electronics";
+  }
+
+  // 2. Detect location
+  let location: string | null = null;
+  const cities = ["hyderabad", "vijayawada", "chennai", "bangalore", "visakhapatnam", "mumbai", "indore", "delhi", "kolkata"];
+  for (const city of cities) {
+    if (normalized.includes(city)) {
+      location = city.charAt(0).toUpperCase() + city.slice(1);
+      break;
+    }
+  }
+
+  // 3. Detect quantity
+  let quantity: string | null = null;
+  const qtyRegex = /(\d+(?:\.\d+)?)\s*(?:cubic feet|cubic ft|cu ft|kg|ton|tons|bag|bags|pieces|pcs|units)/i;
+  const qtyMatch = query.match(qtyRegex);
+  if (qtyMatch) {
+    quantity = qtyMatch[0];
+  } else {
+    // Check for a raw number
+    const numRegex = /(\d+(?:\.\d+)?)/;
+    const numMatch = query.match(numRegex);
+    if (numMatch) {
+      quantity = numMatch[0];
+    }
+  }
+
+  // 4. Detect budget
+  let budget: string | null = null;
+  const budgetRegex = /(?:rs\.?|₹)\s*(\d+(?:\s*-\s*\d+)?(?:\/\w+)?)/i;
+  const budgetMatch = query.match(budgetRegex);
+  if (budgetMatch) {
+    budget = budgetMatch[0];
+  }
+
+  // 5. Detect quality
+  let quality: string | null = null;
+  if (normalized.includes("a grade") || normalized.includes("grade a")) {
+    quality = "A Grade";
+  } else if (normalized.includes("b grade") || normalized.includes("grade b")) {
+    quality = "B Grade";
+  } else if (normalized.includes("premium")) {
+    quality = "Premium";
+  } else if (normalized.includes("standard")) {
+    quality = "Standard";
+  }
+
+  // 6. Detect delivery time
+  let deliveryTime: string | null = null;
+  if (normalized.includes("immediate") || normalized.includes("instantly") || normalized.includes("today")) {
+    deliveryTime = "Immediate";
+  } else if (normalized.includes("within 2 days") || normalized.includes("2 days")) {
+    deliveryTime = "Within 2 days";
+  } else if (normalized.includes("within a week") || normalized.includes("week")) {
+    deliveryTime = "Within a week";
+  }
+
+  return { product, quantity, location, budget, quality, deliveryTime };
+};
+
+export const analyzeSourcingRequirement = async (
+  query: string,
+  lang: string = "English"
+): Promise<ExtractedRequirement> => {
+  const local = localAnalyzeSourcingRequirement(query);
+  try {
+    const genAI = getGeminiAIClient();
+    const model = genAI.getGenerativeModel({
+      model: "gemini-2.5-flash-lite",
+      generationConfig: {
+        responseMimeType: "application/json"
+      }
+    });
+
+    const prompt = `You are a professional B2B sourcing agent assistant. Analyze the following buyer sourcing query and extract the parameters:
+Query: "${query}" (User's locale / language: ${lang})
+
+You must return a valid JSON object matching this structure:
+{
+  "product": string | null (the product or raw material name, e.g. "turmeric", "rice", "steel", null if missing),
+  "quantity": string | null (the quantity and unit if specified, e.g. "500 kg", "20 tons", "1000 bags", null if missing. Combine number and unit if both exist, e.g. "500kg"),
+  "location": string | null (delivery city, e.g. "Hyderabad", "Vijayawada", null if missing),
+  "budget": string | null (budget, price range or target price, e.g. "₹25-35/kg", "₹10,000", null if missing),
+  "quality": string | null (quality grade, quality standard or type, e.g. "A Grade", "Premium", null if missing),
+  "deliveryTime": string | null (preferred delivery time, e.g. "Immediate", "Within a week", "10 days", null if missing)
+}
+
+Do not include markdown or explanations. Return only JSON.`;
+
+    const result = await model.generateContent(prompt);
+    const text = result.response.text().trim();
+    const extracted = JSON.parse(text);
+    return {
+      product: extracted.product || local.product,
+      quantity: extracted.quantity || local.quantity,
+      location: extracted.location || local.location,
+      budget: extracted.budget || local.budget,
+      quality: extracted.quality || local.quality,
+      deliveryTime: extracted.deliveryTime || local.deliveryTime
+    };
+  } catch (err) {
+    console.error("analyzeSourcingRequirement failed, using fallbacks:", err);
+    return local;
+  }
+};
+
 

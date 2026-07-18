@@ -12,10 +12,11 @@ import {
   RefreshCw, 
   Bookmark, 
   Search,
-  MessageSquare
+  MessageSquare,
+  ArrowLeft
 } from "lucide-react";
-import type { MatchResult } from "../services/geminiService";
-import { matchSuppliersAI, discussSourcingSession, getSupabaseSuppliers } from "../services/geminiService";
+import type { MatchResult, ExtractedRequirement } from "../services/geminiService";
+import { matchSuppliersAI, discussSourcingSession, getSupabaseSuppliers, analyzeSourcingRequirement } from "../services/geminiService";
 import { speakText, stopSpeaking, getSpeechRecognition } from "../services/speechService";
 import type { Supplier } from "../services/supplierData";
 import { useLanguage } from "../context/LanguageContext";
@@ -27,12 +28,12 @@ import { AICallExperience } from "../components/AICallExperience";
 
 
 const AI_STEPS = [
-  "Understanding your requirement",
-  "Searching suppliers",
-  "Comparing prices",
-  "Checking stock",
-  "Choosing the best supplier",
-  "Preparing response"
+  "Understanding requirement...",
+  "Searching suppliers...",
+  "Checking inventory...",
+  "Checking verification...",
+  "Comparing ratings...",
+  "Preparing recommendations..."
 ];
 
 const CHIPS = ["Rice", "Turmeric", "Steel", "Wood", "Cement", "Packaging", "Cotton", "Electronics"];
@@ -77,7 +78,7 @@ export const BuyerPage: React.FC = () => {
 
   // Speech Recognition state
   const [isListening, setIsListening] = useState(false);
-  const [speechError, setSpeechError] = useState("");
+  const [speechError] = useState("");
 
   // Connect Overlay states
   const [connectState, setConnectState] = useState<"idle" | "connecting" | "connected">("idle");
@@ -108,6 +109,8 @@ export const BuyerPage: React.FC = () => {
   const [onlyAvailableToday, setOnlyAvailableToday] = useState(false);
   const [, setVoiceError] = useState("");
   const subtitleContainerRef = React.useRef<HTMLDivElement>(null);
+  const chatEndRef = React.useRef<HTMLDivElement>(null);
+
 
   const speechHook = getSpeechRecognition();
 
@@ -123,6 +126,38 @@ export const BuyerPage: React.FC = () => {
   const [assistantVoiceListening, setAssistantVoiceListening] = useState(false);
   const [assistantInputText, setAssistantInputText] = useState("");
   const [buyerSpeechLive, setBuyerSpeechLive] = useState("");
+
+  // New workflow states
+  const [workflowStep, setWorkflowStep] = useState<"entry" | "validate" | "collect" | "processing" | "recommendations">("entry");
+  const [extractedReq, setExtractedReq] = useState<ExtractedRequirement>({
+    product: null,
+    quantity: null,
+    location: null,
+    budget: null,
+    quality: null,
+    deliveryTime: null
+  });
+  const [followupQueue, setFollowupQueue] = useState<Array<keyof ExtractedRequirement>>([]);
+  const [currentFollowupIndex, setCurrentFollowupIndex] = useState(0);
+  const [conversationalHistory, setConversationalHistory] = useState<Array<{ sender: 'ai' | 'user'; text: string; field?: keyof ExtractedRequirement }>>([]);
+  const [followupInput, setFollowupInput] = useState("");
+  const [isFollowupListening, setIsFollowupListening] = useState(false);
+
+  // Reservation states
+  const [reservedSupplierId, setReservedSupplierId] = useState<string | null>(null);
+  const [reservationTimeLeft, setReservationTimeLeft] = useState(600); // 10 minutes
+  const [isReservationActive, setIsReservationActive] = useState(false);
+
+  // Refinement states
+  const [isAiTyping, setIsAiTyping] = useState(false);
+  const [isTalkToAIPopupOpen, setIsTalkToAIPopupOpen] = useState(false);
+
+  // Auto-scroll progressive chat to bottom
+  useEffect(() => {
+    if (chatEndRef.current) {
+      chatEndRef.current.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [conversationalHistory, isAiTyping]);
 
 
   // Scroll lock effect on center assistant modal
@@ -158,40 +193,252 @@ export const BuyerPage: React.FC = () => {
     };
   }, []);
 
+  // Reservation Timer Effect
+  useEffect(() => {
+    let interval: any = null;
+    if (isReservationActive && reservationTimeLeft > 0 && reservedSupplierId) {
+      interval = setInterval(() => {
+        setReservationTimeLeft((prev) => {
+          if (prev <= 1) {
+            handleSkipReservation();
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    }
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [isReservationActive, reservationTimeLeft, reservedSupplierId]);
+
+  const handleSkipReservation = () => {
+    if (!searchResult || !searchResult.allMatches || searchResult.allMatches.length === 0) return;
+    
+    // Find current index
+    const currentIndex = searchResult.allMatches.findIndex(m => m.supplier.id === reservedSupplierId);
+    const topThreeMatches = searchResult.allMatches.slice(0, 3);
+    
+    if (currentIndex !== -1 && currentIndex + 1 < topThreeMatches.length) {
+      // Move to next recommended supplier
+      const nextSupplier = topThreeMatches[currentIndex + 1].supplier;
+      setReservedSupplierId(nextSupplier.id);
+      setReservationTimeLeft(600); // reset to 10 minutes
+      setIsReservationActive(true);
+    } else {
+      // No more recommended suppliers left to reserve
+      setReservedSupplierId(null);
+      setIsReservationActive(false);
+    }
+  };
+
   const handleChipClick = (categoryName: string) => {
     const defaultQuery = SUGGESTED_QUERIES[categoryName] || `I need ${categoryName} supplies.`;
     setQuery(defaultQuery);
   };
 
-  const handleVoiceInput = () => {
-    setSpeechError("");
-    setIsListening(true);
-    speechHook.start(
-      language,
-      (result) => {
-        setQuery(result);
-      },
-      () => {
-        setIsListening(false);
-      },
-      (err) => {
-        setIsListening(false);
-        setSpeechError(err);
-      }
-    );
-  };
+
 
   const handleStopVoiceInput = () => {
     speechHook.stop();
     setIsListening(false);
   };
 
-  // Find Suppliers action
-  const handleFindSuppliers = async (e?: React.FormEvent) => {
+  const getQuestionForField = (field: keyof ExtractedRequirement, productName: string) => {
+    switch (field) {
+      case "product":
+        return "What product or raw material would you like to source?";
+      case "quantity":
+        return `What quantity of ${productName || 'the product'} do you need? (e.g., 500 kg, 20 tons)`;
+      case "location":
+        return "What is your target delivery city or location? (e.g., Hyderabad, Vijayawada)";
+      case "budget":
+        return "Do you have a target budget or price range? (Optional)";
+      case "quality":
+        return "What is your preferred quality grade or specification? (Optional)";
+      case "deliveryTime":
+        return "What is your preferred delivery time? (Optional)";
+      default:
+        return "Could you provide more details?";
+    }
+  };
+
+  const getSuggestionsForField = (field: keyof ExtractedRequirement, productName: string) => {
+    const lowerProd = (productName || "").toLowerCase();
+    switch (field) {
+      case "quantity":
+        if (lowerProd.includes("steel") || lowerProd.includes("cement")) {
+          return ["20 tons", "50 tons", "1000 bags", "5000 bags"];
+        }
+        return ["100 kg", "500 kg", "1 ton", "5 tons", "1000 pieces"];
+      case "location":
+        return ["Hyderabad", "Vijayawada", "Chennai", "Bangalore", "Visakhapatnam", "Mumbai"];
+      case "budget":
+        if (lowerProd.includes("rice") || lowerProd.includes("turmeric")) {
+          return ["₹45-55/kg", "₹25-35/kg", "Under ₹50,000"];
+        }
+        if (lowerProd.includes("steel") || lowerProd.includes("cement")) {
+          return ["₹50,000/ton", "₹450/bag", "Under ₹2,00,000"];
+        }
+        return ["₹25-35/kg", "₹100-150/bag", "Under ₹50,000"];
+      case "quality":
+        return ["A Grade", "B Grade", "Premium", "Standard", "Any"];
+      case "deliveryTime":
+        return ["Immediate", "Within 2 days", "Within a week", "15 days"];
+      default:
+        return [];
+    }
+  };
+
+  // Trigger conversational field analysis on Find Suppliers
+  const handleFindSuppliersClick = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!query.trim()) return;
 
+    setWorkflowStep("validate");
+
+    try {
+      // Analyze query parameters via Gemini
+      const analysis = await analyzeSourcingRequirement(query, language);
+      setExtractedReq(analysis);
+
+      const requiredFields: Array<keyof ExtractedRequirement> = ["product", "quantity", "location"];
+      const optionalFields: Array<keyof ExtractedRequirement> = ["budget", "quality", "deliveryTime"];
+
+      // Detect missing parameters
+      const missingRequired = requiredFields.filter(f => !analysis[f] || String(analysis[f]).trim() === "" || String(analysis[f]).toLowerCase() === "null");
+      const missingOptional = optionalFields.filter(f => !analysis[f] || String(analysis[f]).trim() === "" || String(analysis[f]).toLowerCase() === "null");
+
+      const queue = [...missingRequired, ...missingOptional];
+
+      if (queue.length > 0) {
+        setFollowupQueue(queue);
+        setCurrentFollowupIndex(0);
+        setWorkflowStep("collect");
+
+        // Initialize conversational timeline history
+        const firstField = queue[0];
+        const firstQuestion = getQuestionForField(firstField, analysis.product || "");
+        setConversationalHistory([
+          { sender: 'ai', text: `I have analyzed your request. To find the best matching suppliers, I need a few more details.` },
+          { sender: 'ai', text: firstQuestion, field: firstField }
+        ]);
+        setFollowupInput("");
+      } else {
+        // Go straight to search since all parameters are present
+        await startActualSourcingSearch(query);
+      }
+    } catch (err) {
+      console.error("Error analyzing requirements:", err);
+      // Fallback
+      await startActualSourcingSearch(query);
+    }
+  };
+
+  // Voice Input for follow-up wizard
+  const handleFollowupVoiceInput = () => {
+    setIsFollowupListening(true);
+    speechHook.start(
+      language,
+      (result) => {
+        setFollowupInput(result);
+      },
+      () => {
+        setIsFollowupListening(false);
+      },
+      (err) => {
+        setIsFollowupListening(false);
+        console.error("Followup voice input error:", err);
+      }
+    );
+  };
+
+  const handleFollowupStopVoice = () => {
+    speechHook.stop();
+    setIsFollowupListening(false);
+  };
+
+  // Submit parameter answer in follow-up chat
+  const handleFollowupSubmit = (value: string) => {
+    const val = value.trim();
+    if (!val) return;
+
+    const currentField = followupQueue[currentFollowupIndex];
+    const updatedReq = { ...extractedReq, [currentField]: val };
+    setExtractedReq(updatedReq);
+
+    const userMessage = { sender: 'user' as const, text: val };
+    const nextHistory = [...conversationalHistory, userMessage];
+    setConversationalHistory(nextHistory);
+    setFollowupInput("");
+
+    const nextIndex = currentFollowupIndex + 1;
+    setIsAiTyping(true);
+
+    setTimeout(() => {
+      if (nextIndex < followupQueue.length) {
+        const nextField = followupQueue[nextIndex];
+        const productName = updatedReq.product || "";
+        const nextQuestion = getQuestionForField(nextField, productName);
+        
+        setConversationalHistory(prev => [
+          ...prev,
+          { sender: 'ai' as const, text: nextQuestion, field: nextField }
+        ]);
+        setCurrentFollowupIndex(nextIndex);
+      } else {
+        // Completed queue
+        setConversationalHistory(prev => [
+          ...prev,
+          { sender: 'ai' as const, text: "Excellent! All sourcing parameters have been successfully gathered. Search is ready." }
+        ]);
+        setCurrentFollowupIndex(nextIndex);
+      }
+      setIsAiTyping(false);
+    }, 600);
+  };
+
+  // Skip optional parameter in follow-up chat
+  const handleFollowupSkip = () => {
+    const currentField = followupQueue[currentFollowupIndex];
+    const updatedReq = { ...extractedReq, [currentField]: "Skipped" };
+    setExtractedReq(updatedReq);
+
+    const userMessage = { sender: 'user' as const, text: "Skip parameter" };
+    const nextHistory = [...conversationalHistory, userMessage];
+    setConversationalHistory(nextHistory);
+    setFollowupInput("");
+
+    const nextIndex = currentFollowupIndex + 1;
+    setIsAiTyping(true);
+
+    setTimeout(() => {
+      if (nextIndex < followupQueue.length) {
+        const nextField = followupQueue[nextIndex];
+        const productName = updatedReq.product || "";
+        const nextQuestion = getQuestionForField(nextField, productName);
+        
+        setConversationalHistory(prev => [
+          ...prev,
+          { sender: 'ai' as const, text: nextQuestion, field: nextField }
+        ]);
+        setCurrentFollowupIndex(nextIndex);
+      } else {
+        // Completed queue
+        setConversationalHistory(prev => [
+          ...prev,
+          { sender: 'ai' as const, text: "Excellent! All sourcing parameters have been successfully gathered. Search is ready." }
+        ]);
+        setCurrentFollowupIndex(nextIndex);
+      }
+      setIsAiTyping(false);
+    }, 600);
+  };
+
+  // Compile final query and start searching database
+  const startActualSourcingSearch = async (finalQuery: string) => {
     setIsSearching(true);
+    setWorkflowStep("processing");
     setCurrentStep(0);
     setSearchResult(null);
     setConnectState("idle");
@@ -199,7 +446,7 @@ export const BuyerPage: React.FC = () => {
     setIsVoiceOpen(false);
     setShowSupplierCards(false);
 
-    // Sequential 6-step progress stepper updates every 400ms
+    // Sequential step stepper
     const stepInterval = setInterval(() => {
       setCurrentStep((prev) => {
         if (prev >= AI_STEPS.length - 1) {
@@ -208,17 +455,16 @@ export const BuyerPage: React.FC = () => {
         }
         return prev + 1;
       });
-    }, 400);
+    }, 600);
 
     try {
-      // 1. Insert search query into BuyerRequests table in Supabase
       let requestId: string | null = null;
       if (user) {
         const { data: requestData, error: requestError } = await (supabase as any)
           .from('buyerrequests')
           .insert({
             buyer_id: user.id,
-            requirement: query,
+            requirement: finalQuery,
             language: language,
             status: 'active'
           })
@@ -232,11 +478,10 @@ export const BuyerPage: React.FC = () => {
         }
       }
 
-      // 2. Perform Gemini AI matching (fetching active products from Supabase)
-      const results = await matchSuppliersAI(query, language);
+      const results = await matchSuppliersAI(finalQuery, language);
       clearInterval(stepInterval);
-      
-      // 3. Save AI recommendation in Supabase if a valid supplier is matched
+
+      // Save AI recommendation in database
       if (results.bestSupplier && results.bestSupplier.id !== 'mock_assistant' && results.bestSupplier.id !== 'mock_no_match') {
         const bestMatchScore = results.allMatches.find(m => m.supplier.id === results.bestSupplier.id)?.score || 95;
         const cappedScore = bestMatchScore > 100 ? 100 : (bestMatchScore < 0 ? 0 : bestMatchScore);
@@ -256,20 +501,63 @@ export const BuyerPage: React.FC = () => {
         }
       }
 
-
       setCurrentStep(AI_STEPS.length - 1);
       setTimeout(() => {
         setIsSearching(false);
         setSearchResult(results);
-        // Fire floating ChatGPT assistant
+        setWorkflowStep("recommendations");
+        setShowSupplierCards(true);
+
+        // Initialize reservation
+        if (results.allMatches && results.allMatches.length > 0) {
+          setReservedSupplierId(results.allMatches[0].supplier.id);
+          setReservationTimeLeft(600); // 10 minutes
+          setIsReservationActive(true);
+        }
+
         triggerVoiceAssistant(results);
       }, 450);
 
     } catch (err) {
       clearInterval(stepInterval);
       setIsSearching(false);
+      setWorkflowStep("entry");
       alert("Sourcing search failed. Please try again.");
     }
+  };
+
+
+
+  // Find Suppliers action
+  const handleFindSuppliers = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    await handleFindSuppliersClick(e);
+  };
+
+  const handleWorkflowBack = () => {
+    if (workflowStep === "collect") {
+      if (currentFollowupIndex > 0) {
+        const prevIndex = currentFollowupIndex - 1;
+        setCurrentFollowupIndex(prevIndex);
+        setConversationalHistory(prev => prev.slice(0, prev.length - 2));
+      } else {
+        setWorkflowStep("entry");
+      }
+    } else if (workflowStep === "processing" || workflowStep === "validate") {
+      setWorkflowStep("entry");
+    } else if (workflowStep === "recommendations") {
+      setWorkflowStep("collect");
+      setCurrentFollowupIndex(followupQueue.length);
+    }
+  };
+
+  const handleWorkflowClose = () => {
+    setWorkflowStep("entry");
+    setQuery("");
+    setSearchResult(null);
+    setIsSearching(false);
+    setIsReservationActive(false);
+    setReservedSupplierId(null);
   };
 
   // Trigger Center assistant dialog
@@ -707,103 +995,368 @@ export const BuyerPage: React.FC = () => {
       {/* Main Console Box */}
       <div className="space-y-8 max-w-4xl mx-auto">
         
-        {/* Large Sourcing Search Container */}
-        <div className="rounded-2xl border border-app-border bg-app-card p-5 sm:p-6 shadow-premium transition-all duration-300">
-          <form onSubmit={handleFindSuppliers} className="space-y-4">
-            <div className="relative rounded-xl border border-app-border bg-app-bg focus-within:border-primary transition-all duration-200">
-              <textarea
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder={t("searchPlaceholder")}
-                rows={3}
-                className="w-full bg-transparent px-4 py-3.5 pr-12 text-sm sm:text-base text-app-text placeholder-app-text-secondary border-0 focus:ring-0 outline-none resize-none"
-              />
+        {/* Step 1: Entry Console */}
+        {workflowStep === "entry" && (
+          <div className="space-y-6">
+            <div className="rounded-2xl border border-app-border bg-app-card p-5 sm:p-6 shadow-premium transition-all duration-300">
+              <form onSubmit={handleFindSuppliers} className="space-y-4">
+                <div className="relative rounded-xl border border-app-border bg-app-bg focus-within:border-primary transition-all duration-200">
+                  <textarea
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    placeholder={t("searchPlaceholder")}
+                    rows={4}
+                    className="w-full bg-transparent px-4 py-3.5 pr-12 text-sm sm:text-base text-app-text placeholder-app-text-secondary border-0 focus:ring-0 outline-none resize-none"
+                  />
 
-              {/* Dictating Screen */}
-              {isListening && (
-                <div className="absolute inset-0 bg-primary/5 rounded-xl backdrop-blur-[2px] flex items-center justify-center gap-3.5">
-                  <div className="flex gap-1 h-6 items-end">
-                    <span className="w-1.5 h-6 bg-primary rounded-full animate-wave-fast" />
-                    <span className="w-1.5 h-6 bg-primary rounded-full animate-wave-medium" style={{ animationDelay: '0.1s' }} />
-                    <span className="w-1.5 h-6 bg-primary rounded-full animate-wave-slow" style={{ animationDelay: '0.2s' }} />
-                  </div>
-                  <span className="text-sm font-bold text-primary animate-pulse">Listening ({language}). Speak requirement...</span>
+                  {/* Dictating Screen */}
+                  {isListening && (
+                    <div className="absolute inset-0 bg-primary/5 rounded-xl backdrop-blur-[2px] flex items-center justify-center gap-3.5">
+                      <div className="flex gap-1 h-6 items-end">
+                        <span className="w-1.5 h-6 bg-primary rounded-full animate-wave-fast" />
+                        <span className="w-1.5 h-6 bg-primary rounded-full animate-wave-medium" style={{ animationDelay: '0.1s' }} />
+                        <span className="w-1.5 h-6 bg-primary rounded-full animate-wave-slow" style={{ animationDelay: '0.2s' }} />
+                      </div>
+                      <span className="text-sm font-bold text-primary animate-pulse">Listening ({language}). Speak requirement...</span>
+                      <button
+                        type="button"
+                        onClick={handleStopVoiceInput}
+                        className="p-1 rounded-lg bg-primary/10 hover:bg-primary/20 text-primary transition-all ml-4 cursor-pointer"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {speechError && (
+                  <p className="text-xs text-danger font-medium leading-normal">{speechError}</p>
+                )}
+
+                {/* Category selection chips */}
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs font-semibold text-app-text-secondary uppercase tracking-wide">Popular Searches:</span>
+                  {CHIPS.map((chip) => (
+                    <button
+                      key={chip}
+                      type="button"
+                      onClick={() => handleChipClick(chip)}
+                      className="rounded-lg bg-app-bg hover:bg-app-card-hover border border-app-border text-xs px-2.5 py-1 text-app-text font-semibold transition-colors cursor-pointer"
+                    >
+                      {chip}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Actions panel */}
+                <div className="flex flex-col sm:flex-row gap-3 pt-2">
+                  
+                  {/* Talk to AI placeholder trigger */}
                   <button
                     type="button"
-                    onClick={handleStopVoiceInput}
-                    className="p-1 rounded-lg bg-primary/10 hover:bg-primary/20 text-primary transition-all ml-4 cursor-pointer"
+                    onClick={() => setIsTalkToAIPopupOpen(true)}
+                    className="flex items-center justify-center gap-2 rounded-xl border border-app-border bg-app-card shadow-sm px-5 py-3 text-sm font-bold hover:bg-app-card-hover text-app-text transition-colors cursor-pointer"
                   >
-                    <X className="h-4 w-4" />
+                    <Mic className="h-4 w-4 text-primary" />
+                    <span>Talk to AI</span>
                   </button>
-                </div>
-              )}
-            </div>
 
-            {speechError && (
-              <p className="text-xs text-danger font-medium leading-normal">{speechError}</p>
-            )}
-
-            {/* Category selection chips */}
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-xs font-semibold text-app-text-secondary uppercase tracking-wide">Popular Searches:</span>
-              {CHIPS.map((chip) => (
-                <button
-                  key={chip}
-                  type="button"
-                  onClick={() => handleChipClick(chip)}
-                  className="rounded-lg bg-app-bg hover:bg-app-card-hover border border-app-border text-xs px-2.5 py-1 text-app-text font-semibold transition-colors cursor-pointer"
-                >
-                  {chip}
-                </button>
-              ))}
-            </div>
-
-            {/* Actions panel */}
-            <div className="flex flex-col sm:flex-row gap-3 pt-2">
-              
-              {/* Voice action button */}
-              <button
-                type="button"
-                onClick={handleVoiceInput}
-                className="flex items-center gap-2 rounded-xl border border-app-border bg-app-card shadow-sm px-5 py-3 text-sm font-bold hover:bg-app-card-hover text-app-text transition-colors cursor-pointer"
-              >
-                <Mic className="h-4 w-4 text-primary" />
-                <span>🎤 {t("speakBtn")}</span>
-              </button>
-
-              <button
-                type="submit"
-                disabled={!query.trim() || isSearching}
-                className="flex-grow flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-primary to-secondary hover:opacity-95 text-white px-6 py-3 text-sm font-bold shadow-premium transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
-              >
-                {isSearching ? (
-                  <>
-                    <RefreshCw className="h-4 w-4 animate-spin" />
-                    <span>Matching Suppliers...</span>
-                  </>
-                ) : (
-                  <>
+                  <button
+                    type="submit"
+                    disabled={!query.trim() || isSearching}
+                    className="flex-grow flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-primary to-secondary hover:opacity-95 text-white px-6 py-3 text-sm font-bold shadow-premium transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                  >
                     <Sparkles className="h-4 w-4" />
                     <span>Find Suppliers</span>
-                  </>
-                )}
-              </button>
+                  </button>
 
+                  <button
+                    type="button"
+                    onClick={() => { setQuery(""); setSearchResult(null); stopSpeaking(); setIsVoiceOpen(false); }}
+                    className="rounded-xl border border-app-border bg-app-card hover:bg-app-card-hover text-app-text px-4 py-3 text-sm font-bold transition-all w-full sm:w-auto cursor-pointer"
+                  >
+                    Clear
+                  </button>
+
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {/* Step 2: Sourcing Analysis validation loader */}
+        {workflowStep === "validate" && (
+          <div className="rounded-2xl border border-app-border bg-app-card p-5 sm:p-6 shadow-premium animate-fade-in-up">
+            {/* Header Back/Close */}
+            <div className="flex justify-between items-center border-b border-app-border/40 pb-3 mb-5">
               <button
                 type="button"
-                onClick={() => { setQuery(""); setSearchResult(null); stopSpeaking(); setIsVoiceOpen(false); }}
-                className="rounded-xl border border-app-border bg-app-card hover:bg-app-card-hover text-app-text px-4 py-3 text-sm font-bold transition-all w-full sm:w-auto cursor-pointer"
+                onClick={handleWorkflowBack}
+                className="flex items-center gap-1.5 text-xs font-semibold text-app-text-secondary hover:text-app-text cursor-pointer transition-colors"
               >
-                Clear
+                <ArrowLeft className="h-3.5 w-3.5" />
+                <span>Back</span>
               </button>
-
+              <button
+                type="button"
+                onClick={handleWorkflowClose}
+                className="p-1 rounded-lg hover:bg-app-bg text-app-text-secondary hover:text-app-text cursor-pointer transition-colors"
+              >
+                <X className="h-4.5 w-4.5" />
+              </button>
             </div>
-          </form>
-        </div>
+
+            <div className="text-center py-8 space-y-4">
+              <div className="h-12 w-12 rounded-xl bg-primary/10 text-primary flex items-center justify-center mx-auto">
+                <RefreshCw className="h-6 w-6 animate-spin" />
+              </div>
+              <div className="space-y-1">
+                <h3 className="font-bold text-app-text text-base animate-pulse">Analyzing Sourcing Request...</h3>
+                <p className="text-xs text-app-text-secondary">Extracting details and assessing verification corridors.</p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Step 2: Smart Follow-up Conversational Assistant */}
+        {workflowStep === "collect" && (
+          <div className="rounded-2xl border border-app-border bg-app-card p-5 sm:p-6 shadow-premium animate-fade-in-up space-y-6">
+            {/* Header Back/Close */}
+            <div className="flex justify-between items-center border-b border-app-border/40 pb-3">
+              <button
+                type="button"
+                onClick={handleWorkflowBack}
+                className="flex items-center gap-1.5 text-xs font-semibold text-app-text-secondary hover:text-app-text cursor-pointer transition-colors"
+              >
+                <ArrowLeft className="h-3.5 w-3.5" />
+                <span>Back</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleWorkflowClose}
+                className="p-1 rounded-lg hover:bg-app-bg text-app-text-secondary hover:text-app-text cursor-pointer transition-colors"
+              >
+                <X className="h-4.5 w-4.5" />
+              </button>
+            </div>
+
+            {/* Conversation Log bubbles */}
+            <div className="space-y-4 max-h-[350px] overflow-y-auto pr-1">
+              {conversationalHistory.map((msg, idx) => (
+                <div key={idx} className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'} animate-fade-in-up`}>
+                  <div className={`max-w-[85%] rounded-2xl p-4 text-sm font-medium ${
+                    msg.sender === 'user'
+                      ? 'bg-primary text-white rounded-tr-none shadow-md'
+                      : 'bg-app-bg border border-app-border text-app-text rounded-tl-none shadow-sm'
+                  }`}>
+                    {msg.sender === 'ai' && (
+                      <div className="flex items-center gap-1.5 text-[10px] font-bold text-primary uppercase tracking-wider mb-1.5">
+                        <Bot className="h-3 w-3 animate-pulse" />
+                        <span>Sourcing Assistant</span>
+                      </div>
+                    )}
+                    <p className="leading-relaxed whitespace-pre-wrap">{msg.text}</p>
+                  </div>
+                </div>
+              ))}
+
+              {/* Typing simulation bubble */}
+              {isAiTyping && (
+                <div className="flex justify-start animate-fade-in-up">
+                  <div className="max-w-[85%] rounded-2xl p-4 text-sm font-medium bg-app-bg border border-app-border text-app-text rounded-tl-none shadow-sm flex items-center gap-1.5">
+                    <span className="w-1.5 h-1.5 bg-primary rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                    <span className="w-1.5 h-1.5 bg-primary rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                    <span className="w-1.5 h-1.5 bg-primary rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                  </div>
+                </div>
+              )}
+
+              <div ref={chatEndRef} />
+            </div>
+
+            {/* Input field or summary review depending on index */}
+            {currentFollowupIndex < followupQueue.length ? (
+              <div className="border-t border-app-border/40 pt-4 space-y-4">
+                {/* Suggestions Chips */}
+                {getSuggestionsForField(followupQueue[currentFollowupIndex], extractedReq.product || "").length > 0 && (
+                  <div className="space-y-2">
+                    <span className="text-[10px] font-bold text-app-text-secondary uppercase tracking-wider block">Suggested Responses:</span>
+                    <div className="flex flex-wrap gap-2">
+                      {getSuggestionsForField(followupQueue[currentFollowupIndex], extractedReq.product || "").map((chip) => (
+                        <button
+                          key={chip}
+                          type="button"
+                          onClick={() => handleFollowupSubmit(chip)}
+                          className="rounded-lg bg-app-bg hover:bg-app-card-hover border border-app-border text-xs px-3 py-1.5 text-app-text font-bold transition-all cursor-pointer shadow-sm"
+                        >
+                          {chip}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Input row */}
+                <div className="flex gap-2">
+                  <div className="relative flex-grow rounded-xl border border-app-border bg-app-bg focus-within:border-primary transition-all">
+                    <input
+                      type="text"
+                      value={followupInput}
+                      onChange={(e) => setFollowupInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          handleFollowupSubmit(followupInput);
+                        }
+                      }}
+                      placeholder={`Enter ${followupQueue[currentFollowupIndex]}...`}
+                      className="w-full bg-transparent px-4 py-3 text-sm text-app-text placeholder-app-text-secondary border-0 focus:ring-0 outline-none"
+                    />
+
+                    {/* Mic action button */}
+                    <button
+                      type="button"
+                      onClick={isFollowupListening ? handleFollowupStopVoice : handleFollowupVoiceInput}
+                      className="absolute right-3 top-2.5 p-1 text-app-text-secondary hover:text-primary transition-colors cursor-pointer"
+                    >
+                      <Mic className={`h-4.5 w-4.5 ${isFollowupListening ? 'text-primary animate-pulse' : ''}`} />
+                    </button>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => handleFollowupSubmit(followupInput)}
+                    disabled={!followupInput.trim()}
+                    className="rounded-xl bg-primary hover:opacity-95 text-white px-5 py-3 text-sm font-bold shadow-md disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer transition-opacity"
+                  >
+                    Send
+                  </button>
+
+                  {/* Skip Option */}
+                  {["budget", "quality", "deliveryTime"].includes(followupQueue[currentFollowupIndex]) && (
+                    <button
+                      type="button"
+                      onClick={handleFollowupSkip}
+                      className="rounded-xl border border-app-border bg-app-card hover:bg-app-card-hover text-app-text px-4 py-3 text-sm font-bold cursor-pointer transition-colors"
+                    >
+                      Skip
+                    </button>
+                  )}
+                </div>
+              </div>
+            ) : (
+              /* All fields completed, show summary review (Bug 5 Redesign) */
+              <div className="border-t border-app-border pt-5 space-y-6">
+                <div>
+                  <h4 className="font-extrabold text-sm text-app-text uppercase tracking-wide">Review Sourcing Parameters</h4>
+                  <p className="text-xs text-app-text-secondary">Please review and confirm before launching supplier discovery.</p>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 bg-app-bg border border-app-border p-5 rounded-xl text-xs sm:text-sm">
+                  {/* Left Column: Required parameters */}
+                  <div className="space-y-4">
+                    <h5 className="font-bold text-xs text-primary uppercase tracking-wide border-b border-app-border/40 pb-1.5">Required Parameters</h5>
+                    
+                    <div className="space-y-1">
+                      <span className="text-[10px] font-bold text-app-text-secondary uppercase">Product Name</span>
+                      <p className="font-extrabold text-app-text">{extractedReq.product || 'N/A'}</p>
+                    </div>
+                    
+                    <div className="space-y-1">
+                      <span className="text-[10px] font-bold text-app-text-secondary uppercase">Quantity</span>
+                      <p className="font-extrabold text-app-text">{extractedReq.quantity || 'N/A'}</p>
+                    </div>
+                    
+                    <div className="space-y-1">
+                      <span className="text-[10px] font-bold text-app-text-secondary uppercase">Delivery City</span>
+                      <p className="font-extrabold text-app-text">{extractedReq.location || 'N/A'}</p>
+                    </div>
+                  </div>
+
+                  {/* Right Column: Optional parameters */}
+                  <div className="space-y-4 border-t sm:border-t-0 sm:border-l sm:border-app-border/60 pt-4 sm:pt-0 sm:pl-6">
+                    <h5 className="font-bold text-xs text-primary uppercase tracking-wide border-b border-app-border/40 pb-1.5">Optional Parameters</h5>
+                    
+                    <div className="space-y-1">
+                      <span className="text-[10px] font-bold text-app-text-secondary uppercase">Budget Target</span>
+                      <p className="font-extrabold text-app-text">
+                        {(!extractedReq.budget || extractedReq.budget === "Skipped" || extractedReq.budget.trim() === "") ? "Not specified" : extractedReq.budget}
+                      </p>
+                    </div>
+                    
+                    <div className="space-y-1">
+                      <span className="text-[10px] font-bold text-app-text-secondary uppercase">Preferred Quality</span>
+                      <p className="font-extrabold text-app-text">
+                        {(!extractedReq.quality || extractedReq.quality === "Skipped" || extractedReq.quality.trim() === "") ? "Not specified" : extractedReq.quality}
+                      </p>
+                    </div>
+                    
+                    <div className="space-y-1">
+                      <span className="text-[10px] font-bold text-app-text-secondary uppercase">Preferred Delivery</span>
+                      <p className="font-extrabold text-app-text">
+                        {(!extractedReq.deliveryTime || extractedReq.deliveryTime === "Skipped" || extractedReq.deliveryTime.trim() === "") ? "Not specified" : extractedReq.deliveryTime}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex gap-3">
+                  <button
+                    onClick={handleWorkflowBack}
+                    className="rounded-xl border border-app-border bg-app-card hover:bg-app-card-hover text-app-text px-5 py-3 text-sm font-bold cursor-pointer transition-colors"
+                  >
+                    Back
+                  </button>
+                  <button
+                    onClick={() => {
+                      const finalQuery = `I need ${extractedReq.quantity} of ${extractedReq.product} delivered to ${extractedReq.location}.` +
+                        (extractedReq.quality !== 'Skipped' && extractedReq.quality ? ` Quality preferred: ${extractedReq.quality}.` : '') +
+                        (extractedReq.budget !== 'Skipped' && extractedReq.budget ? ` Target budget: ${extractedReq.budget}.` : '') +
+                        (extractedReq.deliveryTime !== 'Skipped' && extractedReq.deliveryTime ? ` Delivery target: ${extractedReq.deliveryTime}.` : '');
+                      startActualSourcingSearch(finalQuery);
+                    }}
+                    className="flex-grow flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-primary to-secondary text-white py-3 text-sm font-bold shadow-premium hover:opacity-95 cursor-pointer"
+                  >
+                    <Sparkles className="h-4.5 w-4.5 animate-pulse" />
+                    <span>Continue to Supplier Search</span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      setWorkflowStep("entry");
+                      setQuery("");
+                    }}
+                    className="rounded-xl border border-app-border bg-app-card hover:bg-app-card-hover text-app-text px-5 py-3 text-sm font-bold cursor-pointer transition-colors"
+                  >
+                    Restart
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Workflow Stepper Panel */}
-        {isSearching && (
+        {/* Step 3: Sequential processing progress loader */}
+        {workflowStep === "processing" && (
           <div className="rounded-2xl border border-app-border bg-app-card p-5 sm:p-6 shadow-premium animate-fade-in-up">
+            {/* Header Back/Close */}
+            <div className="flex justify-between items-center border-b border-app-border/40 pb-3 mb-5">
+              <button
+                type="button"
+                onClick={handleWorkflowBack}
+                className="flex items-center gap-1.5 text-xs font-semibold text-app-text-secondary hover:text-app-text cursor-pointer transition-colors"
+              >
+                <ArrowLeft className="h-3.5 w-3.5" />
+                <span>Back</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleWorkflowClose}
+                className="p-1 rounded-lg hover:bg-app-bg text-app-text-secondary hover:text-app-text cursor-pointer transition-colors"
+              >
+                <X className="h-4.5 w-4.5" />
+              </button>
+            </div>
+
             <div className="flex items-center gap-3 mb-6">
               <RefreshCw className="h-5 w-5 text-primary animate-spin" />
               <div>
@@ -847,10 +1400,30 @@ export const BuyerPage: React.FC = () => {
           </div>
         )}
 
-        {/* AI Recommendations Best Match Cards */}
-        {searchResult && !isSearching && (
-          showSupplierCards ? (
-            <div className="space-y-8 animate-fade-in-up">
+        {/* Step 4 & 5: AI recommendations card grid and reservation countdown */}
+        {workflowStep === "recommendations" && searchResult && (
+          <div className="space-y-6 animate-fade-in-up">
+            {/* Header Back/Close */}
+            <div className="flex justify-between items-center border-b border-app-border/40 pb-3">
+              <button
+                type="button"
+                onClick={handleWorkflowBack}
+                className="flex items-center gap-1.5 text-xs font-semibold text-app-text-secondary hover:text-app-text cursor-pointer transition-colors"
+              >
+                <ArrowLeft className="h-3.5 w-3.5" />
+                <span>Back</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleWorkflowClose}
+                className="p-1 rounded-lg hover:bg-app-bg text-app-text-secondary hover:text-app-text cursor-pointer transition-colors"
+              >
+                <X className="h-4.5 w-4.5" />
+              </button>
+            </div>
+
+            {showSupplierCards ? (
+              <div className="space-y-8">
               
               {/* AI Assistant Reopen Banner */}
               <div className="rounded-2xl border border-primary/20 bg-gradient-to-r from-primary/5 to-secondary/5 p-4.5 flex flex-col sm:flex-row justify-between items-center gap-4.5">
@@ -1069,8 +1642,9 @@ export const BuyerPage: React.FC = () => {
                 </button>
               </div>
             </div>
-          )
-        )}
+          )}
+        </div>
+      )}
 
         {/* Manual Browse suppliers directory */}
         <div className="border-t border-app-border pt-12 space-y-6">
@@ -1504,6 +2078,35 @@ export const BuyerPage: React.FC = () => {
               </button>
             </div>
 
+          </div>
+        </div>
+      )}
+
+      {/* Talk to AI Coming Soon Popup */}
+      {isTalkToAIPopupOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-md animate-fade-in">
+          <div className="w-full max-w-sm rounded-2xl border border-app-border bg-app-card p-6 shadow-premium-lg animate-fade-in-up m-4 text-center space-y-4">
+            <div className="h-12 w-12 rounded-xl bg-primary/10 text-primary flex items-center justify-center mx-auto">
+              <Bot className="h-6 w-6 animate-pulse" />
+            </div>
+            <div className="space-y-1.5">
+              <h3 className="text-lg font-bold text-app-text">AI Voice Assistant</h3>
+              <p className="text-xs text-app-text-secondary">
+                Coming Soon
+              </p>
+              <p className="text-xs text-app-text-secondary/80">
+                This feature will be integrated separately.
+              </p>
+            </div>
+            <div className="pt-2">
+              <button
+                type="button"
+                onClick={() => setIsTalkToAIPopupOpen(false)}
+                className="w-full rounded-xl bg-gradient-to-r from-primary to-secondary text-white py-2.5 text-xs font-bold shadow cursor-pointer transition-all hover:opacity-90 animate-none"
+              >
+                Close
+              </button>
+            </div>
           </div>
         </div>
       )}
