@@ -472,11 +472,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     }
 
-    const checkSession = async () => {
-      try {
-        const { data: { session }, error } = await supabase.auth.getSession();
-        if (error) throw error;
+    let isHandled = false;
 
+    // Timeout safety fallback: never let loading spinner run indefinitely
+    const timeoutId = setTimeout(() => {
+      if (!isHandled) {
+        console.warn("Auth initialization timed out. Clearing loading state to prevent infinite spinner.");
+        setLoading(false);
+        isHandled = true;
+      }
+    }, 3000); // 3 seconds timeout
+
+    // Purely rely on onAuthStateChange to get the initial session and subsequent changes
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      console.log("onAuthStateChange fired event:", event, "has session:", !!session);
+      
+      try {
         if (session && session.user) {
           await fetchAndCacheUser(session.user.id);
         } else {
@@ -484,25 +495,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           localStorage.removeItem("supply_market_session");
         }
       } catch (err) {
-        console.error("Error checking session:", err);
+        console.error("Error in auth state change handler:", err);
       } finally {
-        setLoading(false);
-      }
-    };
-
-    checkSession();
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
-      if (session && session.user) {
-        await fetchAndCacheUser(session.user.id);
-      } else {
-        setUser(null);
-        localStorage.removeItem("supply_market_session");
+        if (!isHandled) {
+          setLoading(false);
+          isHandled = true;
+          clearTimeout(timeoutId);
+        }
       }
     });
 
     return () => {
       subscription.unsubscribe();
+      clearTimeout(timeoutId);
     };
   }, []);
 
