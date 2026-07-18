@@ -369,12 +369,31 @@ export const SellerPage: React.FC = () => {
       if (currentSupplierData) {
         console.log("Supplier Record:", currentSupplierData);
 
-        // Fetch products for this supplier ordered by created_at DESC
-        const { data: productsData, error: productsError } = await (supabase as any)
+        // Fetch products for this supplier ordered by created_at DESC (fallback if column missing)
+        let productsData = null;
+        let productsError = null;
+
+        const firstTry = await (supabase as any)
           .from('products')
           .select('*')
           .eq('supplier_id', currentSupplierData.id)
           .order('created_at', { ascending: false });
+
+        if (firstTry.error) {
+          console.warn("Products load with created_at order failed, retrying without order clause:", firstTry.error);
+          const secondTry = await (supabase as any)
+            .from('products')
+            .select('*')
+            .eq('supplier_id', currentSupplierData.id);
+          
+          if (secondTry.error) {
+            productsError = secondTry.error;
+          } else {
+            productsData = secondTry.data;
+          }
+        } else {
+          productsData = firstTry.data;
+        }
 
         if (productsError) {
           console.error("Error loading products for seller:", productsError);
@@ -711,7 +730,7 @@ export const SellerPage: React.FC = () => {
 
       if (formMode === "add") {
         // 4. Insert into public.products
-        const insertPayload = {
+        const insertPayload: any = {
           supplier_id: supplierId,
           product_name: formData.name,
           category: formData.category,
@@ -725,10 +744,24 @@ export const SellerPage: React.FC = () => {
 
         console.log("Insert payload:", insertPayload);
 
-        const { data: insertedRow, error: insertError } = await (supabase as any)
+        let { data: insertedRow, error: insertError } = await (supabase as any)
           .from('products')
           .insert(insertPayload)
           .select();
+
+        // Fallback retry if created_at is missing from products schema cache
+        if (insertError && (insertError.message?.includes('created_at') || insertError.code === '42703')) {
+          console.warn("Inserting product with created_at failed, retrying without created_at column:", insertError.message);
+          delete insertPayload.created_at;
+          
+          const retryResult = await (supabase as any)
+            .from('products')
+            .insert(insertPayload)
+            .select();
+            
+          insertedRow = retryResult.data;
+          insertError = retryResult.error;
+        }
 
         console.log("Inserted row:", insertedRow);
         console.log("Supabase error (if any):", insertError);

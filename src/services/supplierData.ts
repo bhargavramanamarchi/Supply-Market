@@ -12,6 +12,8 @@ export interface Product {
   contactNumber: string;
   availability: string; // e.g., "Immediate", "Within 2 days"
   businessHours: string;
+  created_at?: string;
+  supplier_id?: string;
 }
 
 export interface Supplier {
