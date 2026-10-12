@@ -1,7 +1,8 @@
 import { createClient } from '@supabase/supabase-js';
 import fs from 'fs';
 
-const env = fs.readFileSync('.env', 'utf8');
+const envPath = fs.existsSync('.env') ? '.env' : new URL('../.env', import.meta.url);
+const env = fs.readFileSync(envPath, 'utf8');
 const envVars = {};
 env.split('\n').forEach(line => {
   const parts = line.split('=');

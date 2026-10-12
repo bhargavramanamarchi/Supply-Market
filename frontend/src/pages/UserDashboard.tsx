@@ -18,7 +18,7 @@ import {
   UserMinus,
   ExternalLink
 } from "lucide-react";
-import { useTheme } from "../components/ThemeContext";
+import { useTheme } from "../context/ThemeContext";
 import { useLanguage } from "../context/LanguageContext";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";

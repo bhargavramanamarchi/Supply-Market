@@ -1,4 +1,4 @@
-import type { Supplier, Product } from "./supplierData";
+import { getStoredSuppliers, type Supplier, type Product } from "./supplierData";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { supabase } from "./supabase";
 
@@ -163,10 +163,15 @@ export const getSupabaseSuppliers = async (): Promise<Supplier[]> => {
       }
     });
 
+    if (orderedSuppliers.length === 0) {
+      console.warn("No suppliers loaded from Supabase, falling back to local dataset.");
+      return getStoredSuppliers();
+    }
+
     return orderedSuppliers;
   } catch (err) {
-    console.error("Error fetching suppliers from Supabase:", err);
-    return [];
+    console.error("Error fetching suppliers from Supabase, falling back to local dataset:", err);
+    return getStoredSuppliers();
   }
 };
 

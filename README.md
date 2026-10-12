@@ -249,38 +249,78 @@ Seller Dashboard
 ```text
 Supply-Market/
 │
-├── public/
-├── src/
+├── frontend/
+│   ├── public/
+│   │   ├── favicon.svg
+│   │   └── icons.svg
+│   │
+│   ├── src/
+│   │   ├── assets/
+│   │   ├── components/
+│   │   │   ├── AICallExperience.tsx
+│   │   │   ├── ConversationalAssistant.tsx
+│   │   │   ├── Navbar.tsx
+│   │   │   └── ProtectedRoute.tsx
+│   │   ├── context/
+│   │   │   ├── AuthContext.tsx
+│   │   │   ├── LanguageContext.tsx
+│   │   │   └── ThemeContext.tsx
+│   │   ├── hooks/
+│   │   │   └── useAuth.ts
+│   │   ├── pages/
+│   │   │   ├── BuyerPage.tsx
+│   │   │   ├── HomePage.tsx
+│   │   │   ├── SellerPage.tsx
+│   │   │   └── UserDashboard.tsx
+│   │   ├── services/
+│   │   │   ├── geminiService.ts
+│   │   │   ├── localization.ts
+│   │   │   ├── murfService.ts
+│   │   │   ├── notificationService.ts
+│   │   │   ├── speechService.ts
+│   │   │   ├── supabase.ts
+│   │   │   └── supplierData.ts
+│   │   ├── types/
+│   │   │   └── database.ts
+│   │   ├── App.css
+│   │   ├── App.tsx
+│   │   ├── index.css
+│   │   └── main.tsx
+│   │
+│   ├── index.html
+│   ├── vite.config.ts
+│   ├── tsconfig.json
+│   ├── tsconfig.app.json
+│   └── tsconfig.node.json
 │
-├── assets/
-├── components/
-├── context/
-├── hooks/
-├── pages/
-│   ├── HomePage
-│   ├── BuyerDashboard
-│   ├── SellerDashboard
-│   └── UserDashboard
+├── backend/
+│   └── README.md                        # Architecture documentation (Supabase BaaS boundary)
 │
-├── services/
-│   ├── geminiService
-│   ├── murfService
-│   ├── speechService
-│   ├── localization
-│   ├── supabase
-│   └── supplierData
+├── supabase/
+│   ├── schema.sql
+│   ├── seed.sql
+│   └── migrations/
+│       ├── add_buyer_connections_migration.sql
+│       ├── add_buyer_follows_migration.sql
+│       ├── add_created_at_migration.sql
+│       └── add_created_at_to_products_migration.sql
 │
-├── types/
-├── schema.sql
-├── seed.sql
-├── add_created_at_migration.sql
-├── add_buyer_connections_migration.sql
-├── add_buyer_follows_migration.sql
-├── App.tsx
-├── main.tsx
+├── scripts/
+│   └── test_query.js
+│
 ├── .env.example
+├── .gitignore
+├── .oxlintrc.json
+├── package.json
+├── package-lock.json
+├── vercel.json
 └── README.md
 ```
+
+> **Note on Architecture**:
+> - **Frontend**: Cleanly isolated under `frontend/` while orchestrable via root npm scripts for seamless local development and Vercel builds.
+> - **Backend**: Documents the managed Supabase BaaS architecture with no custom unnecessary servers.
+> - **Database**: Organizing SQL files into `supabase/` and `supabase/migrations/` structures them for Supabase CLI compatibility without touching live data.
 
 ---
 

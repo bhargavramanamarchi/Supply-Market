@@ -460,21 +460,25 @@ export const BuyerPage: React.FC = () => {
     try {
       let requestId: string | null = null;
       if (user) {
-        const { data: requestData, error: requestError } = await (supabase as any)
-          .from('buyerrequests')
-          .insert({
-            buyer_id: user.id,
-            requirement: finalQuery,
-            language: language,
-            status: 'active'
-          })
-          .select('id')
-          .single();
+        try {
+          const { data: requestData, error: requestError } = await (supabase as any)
+            .from('buyerrequests')
+            .insert({
+              buyer_id: user.id,
+              requirement: finalQuery,
+              language: language,
+              status: 'active'
+            })
+            .select('id')
+            .single();
 
-        if (requestError) {
-          console.error("Error inserting buyer request:", requestError);
-        } else if (requestData) {
-          requestId = requestData.id;
+          if (requestError) {
+            console.warn("Could not save buyer request to Supabase (offline/network):", requestError);
+          } else if (requestData) {
+            requestId = requestData.id;
+          }
+        } catch (dbErr) {
+          console.warn("Skipping remote DB request logging due to network state:", dbErr);
         }
       }
 

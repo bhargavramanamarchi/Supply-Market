@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Sun, Moon, Menu, X, Bot, ShieldCheck, User, Bell, Languages } from "lucide-react";
-import { useTheme } from "./ThemeContext";
+import { useTheme } from "../context/ThemeContext";
 import { useLanguage } from "../context/LanguageContext";
 import { useAuth } from "../hooks/useAuth";
 import { getStoredNotifications, saveNotifications, playNotificationChime } from "../services/notificationService";

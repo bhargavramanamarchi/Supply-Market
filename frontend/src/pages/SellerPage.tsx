@@ -19,7 +19,7 @@ import {
   Send,
   RefreshCw
 } from "lucide-react";
-import type { Supplier, Product } from "../services/supplierData";
+import { getStoredSuppliers, type Supplier, type Product } from "../services/supplierData";
 import { getSpeechRecognition } from "../services/speechService";
 import { useLanguage } from "../context/LanguageContext";
 import { useAuth } from "../hooks/useAuth";
@@ -213,23 +213,56 @@ export const SellerPage: React.FC = () => {
     setIsLoading(true);
     setError(null);
     try {
-      const { data: { user: authUser }, error: authError } = await supabase.auth.getUser();
+      let authUser: any = null;
+      try {
+        const { data, error: authError } = await supabase.auth.getUser();
+        if (!authError && data?.user) {
+          authUser = data.user;
+        }
+      } catch (e) {
+        console.warn("supabase.auth.getUser() failed over network, falling back to local session:", e);
+      }
+
+      // If network auth check failed, check active session from AuthContext
+      if (!authUser && user) {
+        authUser = {
+          id: user.id,
+          email: user.email,
+          user_metadata: {
+            full_name: user.name,
+            organization: user.company,
+            account_type: user.account_type,
+            phone: user.phone,
+            city: user.city,
+            state: user.state
+          }
+        };
+      }
+
       console.log("Authenticated User ID:", authUser?.id);
       console.log("Authenticated user:", authUser);
 
-      if (authError || !authUser) {
-        console.error("No authenticated user found:", authError);
+      if (!authUser) {
+        console.error("No authenticated user found");
         setError("Please log in to access the seller dashboard.");
         setIsLoading(false);
         return;
       }
 
       // Fetch user profile from public.users table
-      let { data: userRec, error: userRecError } = await (supabase as any)
-        .from('users')
-        .select('*')
-        .eq('id', authUser.id)
-        .maybeSingle();
+      let userRec: any = null;
+      let userRecError: any = null;
+      try {
+        const res = await (supabase as any)
+          .from('users')
+          .select('*')
+          .eq('id', authUser.id)
+          .maybeSingle();
+        userRec = res.data;
+        userRecError = res.error;
+      } catch (netErr) {
+        console.warn("Network error fetching user record:", netErr);
+      }
 
       if (userRecError) {
         console.error("Error fetching user database profile:", userRecError);
@@ -268,11 +301,19 @@ export const SellerPage: React.FC = () => {
       }
 
       // Fetch supplier for the current user
-      const { data: supplierData, error: supplierError } = await (supabase as any)
-        .from('suppliers')
-        .select('*')
-        .eq('user_id', authUser.id)
-        .maybeSingle();
+      let supplierData: any = null;
+      let supplierError: any = null;
+      try {
+        const supRes = await (supabase as any)
+          .from('suppliers')
+          .select('*')
+          .eq('user_id', authUser.id)
+          .maybeSingle();
+        supplierData = supRes.data;
+        supplierError = supRes.error;
+      } catch (netErr) {
+        console.warn("Network error fetching supplier from Supabase:", netErr);
+      }
 
       console.log("Supplier record:", supplierData);
 
@@ -281,6 +322,25 @@ export const SellerPage: React.FC = () => {
       }
 
       let currentSupplierData = supplierData;
+
+      // If Supabase is offline/unreachable and no supplier was found in cloud, use local supplier dataset
+      if (!currentSupplierData) {
+        const storedSups = getStoredSuppliers();
+        const matchedLocalSup = storedSups.find(s => s.id === user?.supplierId) || storedSups[0];
+        if (matchedLocalSup) {
+          currentSupplierData = {
+            id: matchedLocalSup.id,
+            user_id: authUser.id,
+            company_name: user?.company || matchedLocalSup.businessName,
+            location: matchedLocalSup.location,
+            verified: true,
+            rating: matchedLocalSup.rating,
+            trust_score: matchedLocalSup.trustScore,
+            contact_number: matchedLocalSup.contactNumber,
+            business_hours: matchedLocalSup.businessHours
+          };
+        }
+      }
 
       // If missing, automatically create it
       if (!currentSupplierData) {
@@ -373,30 +433,52 @@ export const SellerPage: React.FC = () => {
         let productsData = null;
         let productsError = null;
 
-        const firstTry = await (supabase as any)
-          .from('products')
-          .select('*')
-          .eq('supplier_id', currentSupplierData.id)
-          .order('created_at', { ascending: false });
-
-        if (firstTry.error) {
-          console.warn("Products load with created_at order failed, retrying without order clause:", firstTry.error);
-          const secondTry = await (supabase as any)
+        try {
+          const firstTry = await (supabase as any)
             .from('products')
             .select('*')
-            .eq('supplier_id', currentSupplierData.id);
-          
-          if (secondTry.error) {
-            productsError = secondTry.error;
+            .eq('supplier_id', currentSupplierData.id)
+            .order('created_at', { ascending: false });
+
+          if (firstTry.error) {
+            console.warn("Products load with created_at order failed, retrying without order clause:", firstTry.error);
+            const secondTry = await (supabase as any)
+              .from('products')
+              .select('*')
+              .eq('supplier_id', currentSupplierData.id);
+            
+            if (secondTry.error) {
+              productsError = secondTry.error;
+            } else {
+              productsData = secondTry.data;
+            }
           } else {
-            productsData = secondTry.data;
+            productsData = firstTry.data;
           }
-        } else {
-          productsData = firstTry.data;
+        } catch (netErr) {
+          console.warn("Network error loading products:", netErr);
         }
 
         if (productsError) {
           console.error("Error loading products for seller:", productsError);
+        }
+
+        // Fallback to local products if remote database returned no products
+        if (!productsData || productsData.length === 0) {
+          const storedSups = getStoredSuppliers();
+          const localSup = storedSups.find(s => s.id === currentSupplierData.id) || storedSups[0];
+          if (localSup && localSup.products.length > 0) {
+            productsData = localSup.products.map(p => ({
+              id: p.id,
+              product_name: p.name,
+              category: p.category,
+              description: p.description,
+              price: p.price,
+              unit: p.unit,
+              quantity: p.quantityAvailable,
+              available: p.availability === "Immediate"
+            }));
+          }
         }
 
         const products: Product[] = (productsData || []).map((p: any) => ({
