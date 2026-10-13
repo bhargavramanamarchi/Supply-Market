@@ -449,3 +449,5 @@ Contribute improvements
 
 Thank you for visiting Supply Market.
 
+[![Architecture diagram](https://gitdiagram.com/diagram-badge.svg)](https://gitdiagram.com/bhargavramanamarchi/supply-market?utm_source=readme&utm_medium=badge)
+
